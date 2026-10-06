@@ -7,5 +7,5 @@ return {
 	TurnSeconds = 15, -- auto-throws if the player does nothing
 	RollSeconds = 1.2,
 	IntermissionSeconds = 5,
-	ResultSeconds = 6,
+	ResultSeconds = 6, 
 }

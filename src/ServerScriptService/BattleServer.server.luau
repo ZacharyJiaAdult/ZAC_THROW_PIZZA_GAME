@@ -12,7 +12,19 @@ stateEvent.Parent = remotes
 local throwEvent = Instance.new("RemoteEvent")
 throwEvent.Name = "Throw"
 throwEvent.Parent = remotes
+local startEvent = Instance.new("RemoteEvent")
+startEvent.Name = "Start"
+startEvent.Parent = remotes
 remotes.Parent = ReplicatedStorage
+
+-- Players only join the match queue after pressing START on the title screen.
+local ready = {}
+startEvent.OnServerEvent:Connect(function(player)
+	ready[player] = true
+end)
+Players.PlayerRemoving:Connect(function(player)
+	ready[player] = nil
+end)
 
 local ARENA_CENTER = Vector3.new(0, 300, 0)
 local PAD_OFFSET = 18
@@ -299,7 +311,12 @@ end
 -- Lobby loop -----------------------------------------------------------------
 
 while true do
-	local queue = Players:GetPlayers()
+	local queue = {}
+	for _, p in Players:GetPlayers() do
+		if ready[p] then
+			table.insert(queue, p)
+		end
+	end
 	local needed = Config.BotEnabled and 1 or Config.MinPlayers
 	if #queue < needed then
 		broadcast({ phase = "lobby", message = `Waiting for players ({#queue}/{needed})...` })

@@ -6,6 +6,7 @@ local player = Players.LocalPlayer
 local remotes = ReplicatedStorage:WaitForChild("BattleRemotes")
 local stateEvent = remotes:WaitForChild("State")
 local throwEvent = remotes:WaitForChild("Throw")
+local startEvent = remotes:WaitForChild("Start")
 
 local function make(class, props, parent)
 	local inst = Instance.new(class)
@@ -82,6 +83,73 @@ local throwButton = make("TextButton", {
 	Visible = false,
 }, gui)
 make("UICorner", { CornerRadius = UDim.new(0, 12) }, throwButton)
+
+-- Title screen: the player enters the game by pressing START ----------------------
+
+local titleGui = make("ScreenGui", {
+	Name = "TitleScreen",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 10,
+}, player:WaitForChild("PlayerGui"))
+
+local backdrop = make("CanvasGroup", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Color3.new(1, 1, 1),
+}, titleGui)
+make("UIGradient", {
+	Color = ColorSequence.new(Color3.fromRGB(200, 70, 40), Color3.fromRGB(70, 15, 10)),
+	Rotation = 90,
+}, backdrop)
+
+make("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.35),
+	Size = UDim2.fromOffset(700, 100),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 72,
+	TextColor3 = Color3.fromRGB(255, 220, 60),
+	TextStrokeTransparency = 0,
+	Text = "PIZZA BATTLE",
+}, backdrop)
+
+make("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.47),
+	Size = UDim2.fromOffset(700, 40),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 26,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "Throw pizza. Roll the d20. Win the duel.",
+}, backdrop)
+
+local startButton = make("TextButton", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.65),
+	Size = UDim2.fromOffset(280, 80),
+	BackgroundColor3 = Color3.fromRGB(240, 130, 40),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 36,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "START",
+}, backdrop)
+make("UICorner", { CornerRadius = UDim.new(0, 16) }, startButton)
+
+local started = false
+startButton.Activated:Connect(function()
+	if started then
+		return
+	end
+	started = true
+	startEvent:FireServer()
+	local fade = TweenService:Create(backdrop, TweenInfo.new(0.5), { GroupTransparency = 1 })
+	fade.Completed:Connect(function()
+		titleGui:Destroy()
+	end)
+	fade:Play()
+end)
 
 local turnToken = 0
 

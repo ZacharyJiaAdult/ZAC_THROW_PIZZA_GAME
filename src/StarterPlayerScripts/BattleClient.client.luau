@@ -12,6 +12,9 @@ local buyEvent = remotes:WaitForChild("BuyCrate")
 local equipEvent = remotes:WaitForChild("Equip")
 local crateEvent = remotes:WaitForChild("CrateResult")
 local travelEvent = remotes:WaitForChild("Travel")
+local botMenuEvent = remotes:WaitForChild("BotMenu")
+local chooseBotEvent = remotes:WaitForChild("ChooseBot")
+local Config = require(ReplicatedStorage:WaitForChild("BattleConfig"))
 local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
 
 local function make(class, props, parent)
@@ -448,16 +451,124 @@ local watchButton = make("TextButton", {
 }, gui)
 make("UICorner", { CornerRadius = UDim.new(0, 12) }, watchButton)
 
+-- Arena status from the lobby messages: arenaList[id] = { busy = bool, label = "A vs B" }
+local arenaList = {}
+
+local picker = make("Frame", {
+	AnchorPoint = Vector2.new(1, 1),
+	Position = UDim2.new(1, -20, 1, -80),
+	Size = UDim2.fromOffset(300, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundTransparency = 1,
+	Visible = false,
+}, gui)
+make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }, picker)
+
+local function refreshPicker()
+	for _, child in picker:GetChildren() do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+	for id = 1, Config.ArenaCount do
+		local info = arenaList[id]
+		local busy = info and info.busy
+		local button = make("TextButton", {
+			LayoutOrder = id,
+			Size = UDim2.new(1, 0, 0, 44),
+			BackgroundColor3 = busy and Color3.fromRGB(150, 80, 60) or Color3.fromRGB(60, 60, 80),
+			Font = Enum.Font.GothamBold,
+			TextSize = 16,
+			TextWrapped = true,
+			TextColor3 = Color3.new(1, 1, 1),
+			Text = busy and `Arena {id}: {info.label}` or `Arena {id}: empty`,
+		}, picker)
+		make("UICorner", { CornerRadius = UDim.new(0, 8) }, button)
+		button.Activated:Connect(function()
+			picker.Visible = false
+			travelEvent:FireServer("stands", id)
+			watching = true
+			watchButton.Text = "BACK TO LOBBY"
+		end)
+	end
+end
+
 watchButton.Activated:Connect(function()
-	travelEvent:FireServer(watching and "lobby" or "stands")
-	watching = not watching
-	watchButton.Text = watching and "BACK TO LOBBY" or "WATCH MATCHES"
+	if watching then
+		travelEvent:FireServer("lobby")
+		watching = false
+		watchButton.Text = "WATCH MATCHES"
+		return
+	end
+	picker.Visible = not picker.Visible
+	if picker.Visible then
+		refreshPicker()
+	end
 end)
 
 -- Respawning (for example after a match) puts you back at the lobby
 player.CharacterAdded:Connect(function()
 	watching = false
 	watchButton.Text = "WATCH MATCHES"
+end)
+
+-- Bot kiosk: choose how tough PizzaBot is ------------------------------------------------
+
+local botMenu = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(540, 150 + #Config.BotLevels * 78),
+	BackgroundColor3 = Color3.fromRGB(35, 30, 40),
+	Visible = false,
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 14) }, botMenu)
+make("UIStroke", { Color = Color3.fromRGB(240, 130, 40), Thickness = 3 }, botMenu)
+make("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 56),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 28,
+	TextColor3 = Color3.fromRGB(255, 220, 60),
+	Text = "CHOOSE BOT DIFFICULTY",
+}, botMenu)
+
+for i, level in Config.BotLevels do
+	local reward = math.floor(Config.WinCoins * level.coinMult + 0.5)
+	local button = make("TextButton", {
+		Position = UDim2.fromOffset(20, 60 + (i - 1) * 78),
+		Size = UDim2.new(1, -40, 0, 70),
+		BackgroundColor3 = level.color,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 20,
+		TextWrapped = true,
+		TextColor3 = Color3.new(1, 1, 1),
+		Text = `{level.name}: {level.desc}\nWin = {reward} coins`,
+	}, botMenu)
+	make("UICorner", { CornerRadius = UDim.new(0, 10) }, button)
+	button.Activated:Connect(function()
+		botMenu.Visible = false
+		chooseBotEvent:FireServer(level.id)
+	end)
+end
+
+local cancelBot = make("TextButton", {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -14),
+	Size = UDim2.fromOffset(160, 40),
+	BackgroundColor3 = Color3.fromRGB(90, 90, 100),
+	Font = Enum.Font.GothamBold,
+	TextSize = 18,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "Cancel",
+}, botMenu)
+make("UICorner", { CornerRadius = UDim.new(0, 8) }, cancelBot)
+cancelBot.Activated:Connect(function()
+	botMenu.Visible = false
+	chooseBotEvent:FireServer("cancel")
+end)
+
+botMenuEvent.OnClientEvent:Connect(function()
+	botMenu.Visible = true
 end)
 
 local turnToken = 0
@@ -475,9 +586,19 @@ stateEvent.OnClientEvent:Connect(function(state)
 	turnToken += 1
 	message.Text = state.message or ""
 
+	if state.arenas then
+		arenaList = {}
+		for _, info in state.arenas do
+			arenaList[info.id] = info
+		end
+	end
+
+	local prefix = state.arenaId and `Arena {state.arenaId} - ` or ""
 	if state.round and state.round > 0 then
-		roundLabel.Text = state.round > state.maxRounds and "SUDDEN DEATH"
-			or `Round {state.round} / {state.maxRounds}`
+		roundLabel.Text = prefix
+			.. (state.round > state.maxRounds and "SUDDEN DEATH" or `Round {state.round} / {state.maxRounds}`)
+	elseif state.arenaId then
+		roundLabel.Text = `Arena {state.arenaId}`
 	else
 		roundLabel.Text = "Pizza Battle"
 	end
@@ -486,8 +607,8 @@ stateEvent.OnClientEvent:Connect(function(state)
 		local fighter = state.fighters and state.fighters[i]
 		bar.bg.Visible = fighter ~= nil
 		if fighter then
-			local ratio = math.clamp(fighter.hp / state.maxHp, 0, 1)
-			bar.text.Text = `{fighter.name}  {fighter.hp}/{state.maxHp}`
+			local ratio = math.clamp(fighter.hp / fighter.maxHp, 0, 1)
+			bar.text.Text = `{fighter.name}  {fighter.hp}/{fighter.maxHp}`
 			bar.stroke.Enabled = state.phase == "turn" and state.turnUserId == fighter.userId
 			TweenService:Create(bar.fill, TweenInfo.new(0.4), {
 				Size = UDim2.fromScale(ratio, 1),

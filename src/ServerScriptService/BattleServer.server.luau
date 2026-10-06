@@ -8,37 +8,40 @@ local ArenaMap = require(script.Parent:WaitForChild("ArenaMap"))
 
 local remotes = Instance.new("Folder")
 remotes.Name = "BattleRemotes"
-local stateEvent = Instance.new("RemoteEvent")
-stateEvent.Name = "State"
-stateEvent.Parent = remotes
-local throwEvent = Instance.new("RemoteEvent")
-throwEvent.Name = "Throw"
-throwEvent.Parent = remotes
-local startEvent = Instance.new("RemoteEvent")
-startEvent.Name = "Start"
-startEvent.Parent = remotes
-local profileEvent = Instance.new("RemoteEvent")
-profileEvent.Name = "Profile"
-profileEvent.Parent = remotes
-local buyEvent = Instance.new("RemoteEvent")
-buyEvent.Name = "BuyCrate"
-buyEvent.Parent = remotes
-local equipEvent = Instance.new("RemoteEvent")
-equipEvent.Name = "Equip"
-equipEvent.Parent = remotes
-local crateEvent = Instance.new("RemoteEvent")
-crateEvent.Name = "CrateResult"
-crateEvent.Parent = remotes
-local travelEvent = Instance.new("RemoteEvent")
-travelEvent.Name = "Travel"
-travelEvent.Parent = remotes
+local function makeRemote(name)
+	local event = Instance.new("RemoteEvent")
+	event.Name = name
+	event.Parent = remotes
+	return event
+end
+local stateEvent = makeRemote("State")
+local throwEvent = makeRemote("Throw")
+local startEvent = makeRemote("Start")
+local profileEvent = makeRemote("Profile")
+local buyEvent = makeRemote("BuyCrate")
+local equipEvent = makeRemote("Equip")
+local crateEvent = makeRemote("CrateResult")
+local travelEvent = makeRemote("Travel")
+local botMenuEvent = makeRemote("BotMenu")
+local chooseBotEvent = makeRemote("ChooseBot")
 remotes.Parent = ReplicatedStorage
 
--- Players only join the match queue after pressing START on the title screen.
-local ready = {}
-local waitingSince = {} -- player -> when they stepped into the Waiting Area
-local wantsBot = {} -- player -> true once they used the bot kiosk
-local inMatch = {} -- player -> true while fighting
+local PAD_OFFSET = 18
+
+local map = ArenaMap.build(Config.ArenaCount)
+local arenas = map.arenas
+local zone = map.zone
+
+-- Player state ---------------------------------------------------------------
+
+local ready = {} -- pressed START on the title screen
+local inZone = {} -- standing in the Waiting Area
+local zoneSince = {} -- when they stepped in (queue order)
+local botChoice = {} -- level id picked at the bot kiosk
+local reserved = {} -- in a match countdown or a match
+local fightingArena = {} -- the arena a player is fighting in
+local viewing = {} -- the arena whose HUD a player sees (fighting or standing in its stands)
+local pendingInfo = {} -- countdown info shown to players about to fight
 
 -- Shop profiles live in memory only (no saving yet).
 local profiles = {}
@@ -62,11 +65,16 @@ startEvent.OnServerEvent:Connect(function(player)
 	ready[player] = true
 	sendProfile(player)
 end)
+
 Players.PlayerRemoving:Connect(function(player)
 	ready[player] = nil
-	waitingSince[player] = nil
-	wantsBot[player] = nil
-	inMatch[player] = nil
+	inZone[player] = nil
+	zoneSince[player] = nil
+	botChoice[player] = nil
+	reserved[player] = nil
+	fightingArena[player] = nil
+	viewing[player] = nil
+	pendingInfo[player] = nil
 	profiles[player] = nil
 end)
 
@@ -132,35 +140,32 @@ equipEvent.OnServerEvent:Connect(function(player, itemId)
 	end
 end)
 
-local PAD_OFFSET = 18
+-- Match state for HUDs -------------------------------------------------------
 
-local map = ArenaMap.build()
-local ARENA_CENTER = map.arenaCenter
-
--- Broadcasting ---------------------------------------------------------------
-
-local latest = { phase = "lobby", message = "Waiting for players..." }
-
-local function broadcast(state)
-	latest = state
-	stateEvent:FireAllClients(state)
+-- Each arena keeps its own latest state; only players fighting in it or standing in its stands get it.
+local function sendToViewers(arena, state)
+	arena.latest = state
+	for _, p in Players:GetPlayers() do
+		if viewing[p] == arena then
+			stateEvent:FireClient(p, state)
+		end
+	end
 end
 
-Players.PlayerAdded:Connect(function(player)
-	task.wait(3)
-	stateEvent:FireClient(player, latest)
-end)
+local function idleState(arena)
+	return { phase = "lobby", arenaId = arena.id, message = `Arena {arena.id}: no match right now` }
+end
 
 local function send(phase, match, message, turnUserId)
 	local fighters = {}
 	for _, f in match.fighters do
-		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp })
+		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp, maxHp = f.maxHp })
 	end
-	broadcast({
+	sendToViewers(match.arena, {
 		phase = phase,
+		arenaId = match.arena.id,
 		round = match.round,
 		maxRounds = Config.MaxRounds,
-		maxHp = Config.StartingHealth,
 		fighters = fighters,
 		turnUserId = turnUserId,
 		turnSeconds = Config.TurnSeconds,
@@ -168,7 +173,16 @@ local function send(phase, match, message, turnUserId)
 	})
 end
 
--- Fighters (a real player or the practice bot) -------------------------------
+-- Fighters (a real player or a practice bot) ---------------------------------
+
+local function getBotLevel(id)
+	for _, level in Config.BotLevels do
+		if level.id == id then
+			return level
+		end
+	end
+	return nil
+end
 
 local function newFighter(player)
 	return {
@@ -176,15 +190,26 @@ local function newFighter(player)
 		name = player.DisplayName,
 		userId = player.UserId,
 		hp = Config.StartingHealth,
+		maxHp = Config.StartingHealth,
 		armour = Items.armourReduction(getProfile(player).equipped),
 	}
 end
 
-local function makeBot()
+local function makeBot(level)
 	local model = Players:CreateHumanoidModelFromDescription(Instance.new("HumanoidDescription"), Enum.HumanoidRigType.R15)
 	model.Name = "PizzaBot"
 	model.Parent = workspace
-	return { isBot = true, model = model, name = "PizzaBot", userId = -1, hp = Config.StartingHealth, armour = 0 }
+	return {
+		isBot = true,
+		model = model,
+		name = `PizzaBot ({level.name})`,
+		userId = -1,
+		hp = level.hp,
+		maxHp = level.hp,
+		armour = level.armour,
+		rollMode = level.rollMode,
+		coinMult = level.coinMult,
+	}
 end
 
 local function getCharacter(f)
@@ -206,13 +231,13 @@ local function isReady(f)
 	return getRoot(f) ~= nil
 end
 
-local function placeFighter(f, side)
+local function placeFighter(f, side, arena)
 	local root = getRoot(f)
 	if not root then
 		return false
 	end
-	local pos = ARENA_CENTER + Vector3.new(side * PAD_OFFSET, 4, 0)
-	local lookAt = ARENA_CENTER + Vector3.new(-side * PAD_OFFSET, 4, 0)
+	local pos = arena.center + Vector3.new(side * PAD_OFFSET, 4, 0)
+	local lookAt = arena.center + Vector3.new(-side * PAD_OFFSET, 4, 0)
 	getCharacter(f):PivotTo(CFrame.lookAt(pos, lookAt))
 	root.Anchored = true
 	return true
@@ -244,14 +269,15 @@ end
 
 -- Turn actions ---------------------------------------------------------------
 
+-- Waits for the throw button. Returns the ability the player armed, if any. A bot just pauses.
 local function waitForThrow(f)
 	if f.isBot then
-		task.wait(1.5) -- the bot "thinks" for a moment, then throws
-		return
+		task.wait(1.5)
+		return nil
 	end
 	local player = f.player
 	local thrown = false
-	local chosen -- the ability the player armed, if any (validated by the match loop)
+	local chosen
 	local conn = throwEvent.OnServerEvent:Connect(function(sender, abilityId)
 		if sender == player then
 			thrown = true
@@ -270,7 +296,7 @@ end
 
 local function rollDice(f, ability)
 	local root = getRoot(f)
-	local base = (root and root.Position or ARENA_CENTER) + Vector3.new(0, 6, 0)
+	local base = (root and root.Position or Vector3.zero) + Vector3.new(0, 6, 0)
 
 	local die = Instance.new("Part")
 	die.Name = "D20"
@@ -299,9 +325,12 @@ local function rollDice(f, ability)
 	label.Parent = gui
 
 	local roll = math.random(1, Config.DieSides)
-	if ability == "DoubleDice" then
+	if ability == "DoubleDice" or f.rollMode == "advantage" then
 		roll = math.max(roll, math.random(1, Config.DieSides))
-	elseif ability == "LuckyPepperoni" then
+	elseif f.rollMode == "disadvantage" then
+		roll = math.min(roll, math.random(1, Config.DieSides))
+	end
+	if ability == "LuckyPepperoni" then
 		roll = math.max(roll, Items.LuckyMin)
 	end
 	local started = os.clock()
@@ -349,16 +378,11 @@ end
 
 -- Match ----------------------------------------------------------------------
 
-local function runMatch(a, b)
-	local match = { round = 0, fighters = { a, b } }
+local function runMatch(arena, a, b)
+	local match = { arena = arena, round = 0, fighters = { a, b } }
 	local fighters = match.fighters
 
-	if not (placeFighter(a, -1) and placeFighter(b, 1)) then
-		for _, f in fighters do
-			if f.isBot then
-				f.model:Destroy()
-			end
-		end
+	if not (placeFighter(a, -1, arena) and placeFighter(b, 1, arena)) then
 		return
 	end
 
@@ -397,7 +421,7 @@ local function runMatch(a, b)
 
 			if abilityItem then
 				if ability == "HealingSlice" then
-					f.hp = math.min(Config.StartingHealth, f.hp + Items.HealAmount)
+					f.hp = math.min(f.maxHp, f.hp + Items.HealAmount)
 				end
 				send("rolling", match, `{f.name} uses {abilityItem.name}!`)
 				task.wait(1.2)
@@ -441,10 +465,14 @@ local function runMatch(a, b)
 		end
 	end
 
-	for _, f in fighters do
+	for i, f in fighters do
 		if not f.isBot then
-			local profile = getProfile(f.player)
-			profile.coins += f == winner and Config.WinCoins or Config.LossCoins
+			local foe = fighters[3 - i]
+			local amount = Config.LossCoins
+			if f == winner then
+				amount = foe.isBot and math.floor(Config.WinCoins * foe.coinMult + 0.5) or Config.WinCoins
+			end
+			getProfile(f.player).coins += amount
 			sendProfile(f.player)
 		end
 	end
@@ -453,136 +481,246 @@ local function runMatch(a, b)
 	task.wait(Config.ResultSeconds)
 
 	for _, f in fighters do
-		if f.isBot then
-			f.model:Destroy()
-		elseif f.player.Parent == Players then
+		if not f.isBot and f.player.Parent == Players then
 			f.player:LoadCharacter()
 		end
 	end
 end
 
--- Waiting Area, bot kiosk and spectating -------------------------------------
+-- Waiting Area, arenas, bot kiosk and spectating -----------------------------
 
-local zone = map.zone
+local function inBox(cframe, size, position)
+	local rel = cframe:PointToObjectSpace(position)
+	return math.abs(rel.X) <= size.X / 2 and math.abs(rel.Y) <= size.Y / 2 and math.abs(rel.Z) <= size.Z / 2
+end
 
 local function isInZone(position)
 	local rel = zone.CFrame:PointToObjectSpace(position)
 	return math.abs(rel.X) <= zone.Size.X / 2 and math.abs(rel.Z) <= zone.Size.Z / 2 and rel.Y > -2 and rel.Y < 12
 end
 
--- Standing in the Waiting Area is what puts a player in the queue.
+-- Tracks who is in the Waiting Area (the queue) and which arena each player is watching.
 task.spawn(function()
 	while true do
 		for _, p in Players:GetPlayers() do
 			local root = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
-			if root and not inMatch[p] and isInZone(root.Position) then
-				waitingSince[p] = waitingSince[p] or os.clock()
+			local position = root and root.Position
+
+			if position and isInZone(position) then
+				inZone[p] = true
+				zoneSince[p] = zoneSince[p] or os.clock()
 			else
-				waitingSince[p] = nil
-				wantsBot[p] = nil
+				inZone[p] = nil
+				zoneSince[p] = nil
+				if not reserved[p] then
+					botChoice[p] = nil
+				end
+			end
+
+			local arena = fightingArena[p]
+			if not arena and position then
+				for _, a in arenas do
+					if inBox(a.regionCFrame, a.regionSize, position) then
+						arena = a
+						break
+					end
+				end
+			end
+			if viewing[p] ~= arena then
+				viewing[p] = arena
+				if arena then
+					stateEvent:FireClient(p, arena.latest or idleState(arena))
+				end
 			end
 		end
 		task.wait(0.25)
 	end
 end)
 
-map.botPrompt.Enabled = Config.BotEnabled
-map.botPrompt.Triggered:Connect(function(player)
-	if Config.BotEnabled and waitingSince[player] then
-		wantsBot[player] = true
+local function arenaStatus()
+	local list = {}
+	for _, a in arenas do
+		table.insert(list, { id = a.id, busy = a.busy == true, label = a.label })
+	end
+	return list
+end
+
+-- Everyone who is not watching an arena sees the lobby message.
+task.spawn(function()
+	while true do
+		local allBusy = true
+		for _, a in arenas do
+			if not a.busy then
+				allBusy = false
+			end
+		end
+		local status = arenaStatus()
+		for _, p in Players:GetPlayers() do
+			if not viewing[p] then
+				local message = "Step into the Waiting Area to play, or watch a match!"
+				local pending = pendingInfo[p]
+				if pending then
+					message = `Arena {pending.arena.id}: {pending.label} starts in {pending.seconds}...`
+				elseif inZone[p] then
+					if allBusy then
+						message = "All arenas are busy. You're in the queue!"
+					elseif Config.BotEnabled then
+						message = "Waiting for an opponent... or fight a bot!"
+					else
+						message = "Waiting for an opponent..."
+					end
+				end
+				stateEvent:FireClient(p, { phase = "lobby", message = message, arenas = status })
+			end
+		end
+		task.wait(0.5)
 	end
 end)
 
-travelEvent.OnServerEvent:Connect(function(player, where)
+map.botPrompt.Enabled = Config.BotEnabled
+map.botPrompt.Triggered:Connect(function(player)
+	if Config.BotEnabled and inZone[player] and not reserved[player] then
+		botMenuEvent:FireClient(player)
+	end
+end)
+
+chooseBotEvent.OnServerEvent:Connect(function(player, levelId)
+	if levelId == "cancel" then
+		if not reserved[player] then
+			botChoice[player] = nil
+		end
+	elseif typeof(levelId) == "string" and getBotLevel(levelId) and inZone[player] and not reserved[player] then
+		botChoice[player] = levelId
+	end
+end)
+
+travelEvent.OnServerEvent:Connect(function(player, where, arenaId)
 	local character = player.Character
-	if inMatch[player] or not character or not character:FindFirstChild("HumanoidRootPart") then
+	if reserved[player] or not character or not character:FindFirstChild("HumanoidRootPart") then
 		return
 	end
 	if where == "stands" then
-		character:PivotTo(map.standsSpot())
+		local arena = typeof(arenaId) == "number" and arenas[arenaId]
+		if arena then
+			character:PivotTo(arena.standsSpot())
+		end
 	elseif where == "lobby" then
 		character:PivotTo(map.lobbySpot())
 	end
 end)
 
--- Lobby loop -----------------------------------------------------------------
+-- Matchmaking ----------------------------------------------------------------
 
 local function getQueue()
 	local list = {}
 	for _, p in Players:GetPlayers() do
-		if ready[p] and waitingSince[p] and not inMatch[p] then
+		if ready[p] and inZone[p] and not reserved[p] then
 			table.insert(list, p)
 		end
 	end
-	table.sort(list, function(a, b)
-		return waitingSince[a] < waitingSince[b]
+	table.sort(list, function(x, y)
+		return zoneSince[x] < zoneSince[y]
 	end)
 	return list
 end
 
-local function stillWaiting(p)
-	return p.Parent == Players and waitingSince[p] ~= nil and not inMatch[p]
+local function stillHere(p)
+	return p.Parent == Players and inZone[p] == true
+end
+
+-- Reserves the arena, runs the countdown, then the match. All of it happens in its own thread so
+-- other arenas keep going.
+local function startMatch(arena, a, b, levelId)
+	local level = levelId and getBotLevel(levelId)
+	arena.busy = true
+	reserved[a] = true
+	if b then
+		reserved[b] = true
+	end
+	local label = level and `{a.DisplayName} vs PizzaBot ({level.name})` or `{a.DisplayName} vs {b.DisplayName}`
+	arena.label = label
+
+	task.spawn(function()
+		local cancelled = false
+		for s = Config.IntermissionSeconds, 1, -1 do
+			if not stillHere(a) or (b and not stillHere(b)) or (levelId and botChoice[a] ~= levelId) then
+				cancelled = true
+				break
+			end
+			local info = { arena = arena, seconds = s, label = label }
+			pendingInfo[a] = info
+			if b then
+				pendingInfo[b] = info
+			end
+			task.wait(1)
+		end
+		pendingInfo[a] = nil
+		if b then
+			pendingInfo[b] = nil
+		end
+
+		if not cancelled and stillHere(a) and (not b or stillHere(b)) then
+			local fighterA = newFighter(a)
+			local fighterB = level and makeBot(level) or newFighter(b)
+			fightingArena[a] = arena
+			if b then
+				fightingArena[b] = arena
+			end
+
+			local ok, err = pcall(runMatch, arena, fighterA, fighterB)
+			if not ok then
+				warn("Match error: " .. tostring(err))
+				for _, f in { fighterA, fighterB } do
+					if not f.isBot and f.player.Parent == Players then
+						f.player:LoadCharacter()
+					end
+				end
+			end
+			if fighterB.isBot and fighterB.model.Parent then
+				fighterB.model:Destroy()
+			end
+
+			fightingArena[a] = nil
+			if b then
+				fightingArena[b] = nil
+			end
+		end
+
+		botChoice[a] = nil
+		reserved[a] = nil
+		if b then
+			reserved[b] = nil
+		end
+		arena.busy = false
+		arena.label = nil
+		sendToViewers(arena, idleState(arena))
+	end)
 end
 
 while true do
-	local queue = getQueue()
-	local playerA, playerB, vsBot
-	for _, p in queue do
-		if wantsBot[p] then
-			playerA, vsBot = p, true
+	local arena
+	for _, a in arenas do
+		if not a.busy then
+			arena = a
 			break
 		end
 	end
-	if not playerA and #queue >= 2 then
-		playerA, playerB = queue[1], queue[2]
-	end
 
-	if not playerA then
-		local message = "Step into the Waiting Area to play!"
-		if #queue > 0 then
-			message = Config.BotEnabled and "Waiting for an opponent... or fight the bot!" or "Waiting for an opponent..."
-		end
-		broadcast({ phase = "lobby", message = message })
-		task.wait(0.5)
-		continue
-	end
-
-	local versus = vsBot and `{playerA.DisplayName} vs PizzaBot` or `{playerA.DisplayName} vs {playerB.DisplayName}`
-	local cancelled = false
-	for s = Config.IntermissionSeconds, 1, -1 do
-		if not stillWaiting(playerA) or (playerB and not stillWaiting(playerB)) or (vsBot and not wantsBot[playerA]) then
-			cancelled = true
-			break
-		end
-		broadcast({ phase = "lobby", message = `{versus} starts in {s}...` })
-		task.wait(1)
-	end
-
-	if not cancelled and stillWaiting(playerA) and (not playerB or stillWaiting(playerB)) then
-		local fighterA = newFighter(playerA)
-		local fighterB = vsBot and makeBot() or newFighter(playerB)
-		inMatch[playerA] = true
-		if playerB then
-			inMatch[playerB] = true
-		end
-
-		local ok, err = pcall(runMatch, fighterA, fighterB)
-		if not ok then
-			warn("Match error: " .. tostring(err))
-			for _, f in { fighterA, fighterB } do
-				if not f.isBot and f.player.Parent == Players then
-					f.player:LoadCharacter()
-				end
+	if arena then
+		local queue = getQueue()
+		local playerA, playerB, levelId
+		for _, p in queue do
+			if botChoice[p] then
+				playerA, levelId = p, botChoice[p]
+				break
 			end
 		end
-		if fighterB.isBot and fighterB.model.Parent then
-			fighterB.model:Destroy()
+		if not playerA and #queue >= 2 then
+			playerA, playerB = queue[1], queue[2]
 		end
-
-		inMatch[playerA] = nil
-		if playerB then
-			inMatch[playerB] = nil
+		if playerA then
+			startMatch(arena, playerA, playerB, levelId)
 		end
-		wantsBot[playerA] = nil
 	end
+	task.wait(0.25)
 end

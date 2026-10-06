@@ -21,6 +21,7 @@ local buyCharEvent = remotes:WaitForChild("BuyCharacter")
 local buyCharRobuxEvent = remotes:WaitForChild("BuyCharacterRobux")
 local equipCharEvent = remotes:WaitForChild("EquipCharacter")
 local charResultEvent = remotes:WaitForChild("CharacterResult")
+local dodgeEvent = remotes:WaitForChild("Dodge")
 
 local function make(class, props, parent)
 	local inst = Instance.new(class)
@@ -69,6 +70,8 @@ local function makeBar(side)
 		TextStrokeTransparency = 0.4,
 		ZIndex = 2,
 	}, bg)
+	make("UITextSizeConstraint", { MaxTextSize = 18 }, text)
+	text.TextScaled = true
 	return { bg = bg, fill = fill, text = text, stroke = stroke }
 end
 
@@ -97,6 +100,25 @@ local throwButton = make("TextButton", {
 	Visible = false,
 }, gui)
 make("UICorner", { CornerRadius = UDim.new(0, 12) }, throwButton)
+
+-- Shown to the defender for a moment when a throw is on its way: press it to take zero damage.
+local dodgeButton = make("TextButton", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.42),
+	Size = UDim2.fromOffset(340, 90),
+	BackgroundColor3 = Color3.fromRGB(60, 140, 235),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 36,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "DODGE!",
+	Visible = false,
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 16) }, dodgeButton)
+make("UIStroke", { Color = Color3.new(1, 1, 1), Thickness = 4 }, dodgeButton)
+dodgeButton.Activated:Connect(function()
+	dodgeButton.Visible = false
+	dodgeEvent:FireServer()
+end)
 
 -- Title screen: the player enters the game by pressing START ----------------------
 
@@ -779,7 +801,10 @@ stateEvent.OnClientEvent:Connect(function(state)
 		bar.bg.Visible = fighter ~= nil
 		if fighter then
 			local ratio = math.clamp(fighter.hp / fighter.maxHp, 0, 1)
-			bar.text.Text = `{fighter.name}  {fighter.hp}/{fighter.maxHp}`
+			bar.text.Text = `{fighter.name}  {fighter.hp}/{fighter.maxHp}  dodge x{fighter.dodges or 0}`
+			if fighter.userId == player.UserId then
+				dodgeButton.Text = `DODGE! ({fighter.dodges or 0} left)`
+			end
 			bar.stroke.Enabled = state.phase == "turn" and state.turnUserId == fighter.userId
 			TweenService:Create(bar.fill, TweenInfo.new(0.4), {
 				Size = UDim2.fromScale(ratio, 1),
@@ -790,6 +815,7 @@ stateEvent.OnClientEvent:Connect(function(state)
 
 	local myTurn = state.phase == "turn" and state.turnUserId == player.UserId
 	throwButton.Visible = myTurn
+	dodgeButton.Visible = state.phase == "dodge" and state.turnUserId == player.UserId
 	abilityRow.Visible = myTurn
 	if not myTurn then
 		armedAbility = nil

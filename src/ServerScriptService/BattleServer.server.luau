@@ -31,6 +31,7 @@ local buyCharEvent = makeRemote("BuyCharacter")
 local buyCharRobuxEvent = makeRemote("BuyCharacterRobux")
 local equipCharEvent = makeRemote("EquipCharacter")
 local charResultEvent = makeRemote("CharacterResult")
+local dodgeEvent = makeRemote("Dodge")
 remotes.Parent = ReplicatedStorage
 
 local PAD_OFFSET = 18
@@ -355,7 +356,7 @@ end
 local function send(phase, match, message, turnUserId)
 	local fighters = {}
 	for _, f in match.fighters do
-		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp, maxHp = f.maxHp })
+		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp, maxHp = f.maxHp, dodges = f.dodges })
 	end
 	sendToViewers(match.arena, {
 		phase = phase,
@@ -391,6 +392,7 @@ local function newFighter(player)
 		maxHp = Config.StartingHealth,
 		armour = Items.armourReduction(profile.equipped) + (character and character.armourBonus or 0),
 		char = character, -- the special character, which carries the ability fields
+		dodges = Config.DodgesPerMatch,
 	}
 end
 
@@ -408,6 +410,8 @@ local function makeBot(level)
 		armour = level.armour,
 		rollMode = level.rollMode,
 		coinMult = level.coinMult,
+		dodges = Config.DodgesPerMatch,
+		dodgeChance = level.dodgeChance,
 	}
 end
 
@@ -581,7 +585,8 @@ local function rollDice(f, ability)
 	return roll, die
 end
 
-local function throwPizza(from, to)
+-- missed = true when the defender dodged: they sidestep and the pizza sails past.
+local function throwPizza(from, to, missed)
 	local fromRoot, toRoot = getRoot(from), getRoot(to)
 	if not fromRoot or not toRoot then
 		return
@@ -599,6 +604,13 @@ local function throwPizza(from, to)
 	pizza.CanCollide = false
 	pizza.Parent = workspace
 
+	local defender = getCharacter(to)
+	local restingPivot
+	if missed and defender then
+		restingPivot = defender:GetPivot()
+		defender:PivotTo(restingPivot * CFrame.new(0, 0, 4))
+	end
+
 	local duration = 0.7
 	local started = os.clock()
 	while true do
@@ -611,9 +623,45 @@ local function throwPizza(from, to)
 		RunService.Heartbeat:Wait()
 	end
 	pizza:Destroy()
+	if restingPivot and defender then
+		defender:PivotTo(restingPivot)
+	end
 end
 
 -- Match ----------------------------------------------------------------------
+
+-- Gives the defender a short window to dodge the throw that is about to land. A dodge uses one of
+-- their charges and means zero damage. Bots dodge by chance instead of pressing a button.
+local function askDodge(match, defender)
+	if (defender.dodges or 0) <= 0 then
+		return false
+	end
+	if defender.isBot then
+		if math.random() >= (defender.dodgeChance or 0) then
+			return false
+		end
+		defender.dodges -= 1
+		return true
+	end
+
+	send("dodge", match, `{defender.name}: press DODGE!`, defender.userId)
+	local player = defender.player
+	local pressed = false
+	local conn = dodgeEvent.OnServerEvent:Connect(function(sender)
+		if sender == player then
+			pressed = true
+		end
+	end)
+	local started = os.clock()
+	while not pressed and player.Parent == Players and os.clock() - started < Config.DodgeSeconds do
+		task.wait(0.05)
+	end
+	conn:Disconnect()
+	if pressed then
+		defender.dodges -= 1
+	end
+	return pressed
+end
 
 local function runMatch(arena, a, b)
 	local match = { arena = arena, round = 0, fighters = { a, b } }
@@ -673,6 +721,7 @@ local function runMatch(arena, a, b)
 			task.wait(0.6)
 			die:Destroy()
 
+			local dodged = askDodge(match, foe)
 			local damage = roll
 			local notes = {}
 			if ability == "ExtraCheese" then
@@ -687,15 +736,21 @@ local function runMatch(arena, a, b)
 			if blocked > 0 then
 				table.insert(notes, `{blocked} blocked by armour`)
 			end
-			if foe.char and foe.char.firstHitBlocked and not foe.barrierUsed then
+			if foe.char and foe.char.firstHitBlocked and not foe.barrierUsed and not dodged then
 				foe.barrierUsed = true
 				damage = 0
 				table.insert(notes, `{foe.char.abilityName} absorbed the hit!`)
 			end
+			if dodged then
+				damage = 0
+				notes = { `{foe.name} dodged! ({foe.dodges} dodges left)` }
+			end
 
-			throwPizza(f, foe)
+			throwPizza(f, foe, dodged)
 			foe.hp = math.max(0, foe.hp - damage)
-			flash(foe)
+			if not dodged then
+				flash(foe)
+			end
 			if f.char and f.char.lifesteal and damage > 0 then
 				f.hp = math.min(f.maxHp, f.hp + f.char.lifesteal)
 				table.insert(notes, `{f.char.abilityName}: +{f.char.lifesteal} HP`)

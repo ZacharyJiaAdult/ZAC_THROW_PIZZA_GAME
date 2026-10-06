@@ -1,6 +1,7 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
 local DataStoreService = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
 
@@ -32,6 +33,7 @@ local buyCharRobuxEvent = makeRemote("BuyCharacterRobux")
 local equipCharEvent = makeRemote("EquipCharacter")
 local charResultEvent = makeRemote("CharacterResult")
 local dodgeEvent = makeRemote("Dodge")
+local adminEvent = makeRemote("AdminGrant")
 remotes.Parent = ReplicatedStorage
 
 local PAD_OFFSET = 18
@@ -84,9 +86,68 @@ local function getProfile(player)
 	return profile
 end
 
+-- Admins can grant the Head Chef to anyone. Kept on the server so the list is never sent to clients.
+-- The place owner (when the place belongs to a user) is always an admin.
+local ADMIN_USER_IDS = { 11769949215 } -- @bottleo_waer
+
+local function isAdmin(player)
+	if table.find(ADMIN_USER_IDS, player.UserId) then
+		return true
+	end
+	return game.CreatorType == Enum.CreatorType.User and game.CreatorId == player.UserId
+end
+
+-- Administrators wear a gold "ADMIN" title above their head, and "[ADMIN]" shows before their name in matches.
+local function addAdminTitle(character)
+	local head = character:WaitForChild("Head", 10)
+	if not head or head:FindFirstChild("AdminTitle") then
+		return
+	end
+	local tag = Instance.new("BillboardGui")
+	tag.Name = "AdminTitle"
+	tag.Size = UDim2.fromOffset(120, 30)
+	tag.StudsOffset = Vector3.new(0, 4.6, 0) -- above the special character's name tag
+	tag.AlwaysOnTop = true
+	tag.Parent = head
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundColor3 = Color3.fromRGB(25, 20, 10)
+	label.BackgroundTransparency = 0.25
+	label.Font = Enum.Font.GothamBlack
+	label.TextScaled = true
+	label.TextColor3 = Color3.fromRGB(255, 215, 80)
+	label.Text = "ADMIN"
+	label.Parent = tag
+
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, 8)
+	corner.Parent = label
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = Color3.fromRGB(255, 215, 80)
+	stroke.Thickness = 2
+	stroke.Parent = label
+end
+
+local function trackAdminTitle(player)
+	if not isAdmin(player) then
+		return
+	end
+	if player.Character then
+		task.spawn(addAdminTitle, player.Character)
+	end
+	player.CharacterAdded:Connect(addAdminTitle)
+end
+Players.PlayerAdded:Connect(trackAdminTitle)
+for _, player in Players:GetPlayers() do
+	task.spawn(trackAdminTitle, player)
+end
+
 local function sendProfile(player)
 	if player.Parent == Players then
-		profileEvent:FireClient(player, getProfile(player))
+		local profile = getProfile(player)
+		profile.isAdmin = isAdmin(player) -- tells the client whether to show the admin panel (never saved)
+		profileEvent:FireClient(player, profile)
 	end
 end
 
@@ -268,6 +329,10 @@ buyCharEvent.OnServerEvent:Connect(function(player, charId)
 	if not character then
 		return
 	end
+	if character.coinsLocked then
+		charResultEvent:FireClient(player, { error = `{character.name} can't be bought with coins.` })
+		return
+	end
 	local profile = getProfile(player)
 	if profile.characters[charId] then
 		charResultEvent:FireClient(player, { message = `You already own {character.name}.` })
@@ -292,6 +357,38 @@ equipCharEvent.OnServerEvent:Connect(function(player, charId)
 	if typeof(charId) == "string" and profile.characters[charId] then
 		profile.character = charId
 		sendProfile(player)
+	end
+end)
+
+-- Admin grant: an admin gives or takes the Head Chef for any player in the server.
+adminEvent.OnServerEvent:Connect(function(admin, targetUserId, grant)
+	if not isAdmin(admin) or typeof(targetUserId) ~= "number" or typeof(grant) ~= "boolean" then
+		return
+	end
+	local target = Players:GetPlayerByUserId(targetUserId)
+	local headChef = Characters.ById.HeadChef
+	if not target then
+		charResultEvent:FireClient(admin, { error = "That player is no longer in the server." })
+		return
+	end
+	local profile = getProfile(target)
+	if grant then
+		profile.characters[headChef.id] = true
+	else
+		profile.characters[headChef.id] = nil
+		if profile.character == headChef.id then
+			profile.character = Characters.Default
+		end
+	end
+	sendProfile(target)
+	task.spawn(saveProfile, target)
+	charResultEvent:FireClient(admin, {
+		message = `{grant and "Gave" or "Took"} the Head Chef {grant and "to" or "from"} {target.DisplayName}.`,
+	})
+	if target ~= admin then
+		charResultEvent:FireClient(target, {
+			message = grant and "An admin gave you the Head Chef!" or "An admin removed the Head Chef.",
+		})
 	end
 end)
 
@@ -356,7 +453,7 @@ end
 local function send(phase, match, message, turnUserId)
 	local fighters = {}
 	for _, f in match.fighters do
-		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp, maxHp = f.maxHp, dodges = f.dodges })
+		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp, maxHp = f.maxHp, dodges = f.dodges, slashes = f.slashes })
 	end
 	sendToViewers(match.arena, {
 		phase = phase,
@@ -386,13 +483,14 @@ local function newFighter(player)
 	local character = Characters.ById[profile.character]
 	return {
 		player = player,
-		name = player.DisplayName,
+		name = (isAdmin(player) and "[ADMIN] " or "") .. player.DisplayName,
 		userId = player.UserId,
 		hp = Config.StartingHealth,
 		maxHp = Config.StartingHealth,
 		armour = Items.armourReduction(profile.equipped) + (character and character.armourBonus or 0),
 		char = character, -- the special character, which carries the ability fields
 		dodges = Config.DodgesPerMatch,
+		slashes = (character and character.slash) and Config.SlashUses or 0,
 	}
 end
 
@@ -630,6 +728,58 @@ end
 
 -- Match ----------------------------------------------------------------------
 
+-- The Head Chef's Cleaver Slash: a glowing crescent is cut through the air above the two fighters.
+local function slashEffect(from, to)
+	local fromRoot, toRoot = getRoot(from), getRoot(to)
+	if not fromRoot or not toRoot then
+		return
+	end
+	local center = (fromRoot.Position + toRoot.Position) / 2 + Vector3.new(0, 4, 0)
+	local flat = (toRoot.Position - fromRoot.Position) * Vector3.new(1, 0, 1)
+	local along = flat.Magnitude > 0 and flat.Unit or Vector3.xAxis
+	local lean = CFrame.fromAxisAngle(along, math.rad(30)) -- tilt the arc so it reads as a diagonal slash
+	local radius = 13
+
+	local function pointAt(angle)
+		local offset = along * (radius * math.sin(angle)) + Vector3.new(0, radius * math.cos(angle) - radius * 0.4, 0)
+		return center + lean:VectorToWorldSpace(offset)
+	end
+
+	local segments = {}
+	local count = 18
+	for i = 0, count do
+		local angle = math.rad(-75 + 150 * (i / count))
+		local pos = pointAt(angle)
+		local tangent = pointAt(angle + 0.05) - pos
+		local segment = Instance.new("Part")
+		segment.Name = "SlashSegment"
+		segment.Size = Vector3.new(0.7, 0.7, 3.4)
+		segment.Material = Enum.Material.Neon
+		segment.Color = Color3.fromRGB(255, 245, 200)
+		segment.Anchored = true
+		segment.CanCollide = false
+		segment.CFrame = CFrame.lookAt(pos, pos + tangent)
+		segment.Transparency = 1
+		segment.Parent = workspace
+		table.insert(segments, segment)
+	end
+
+	-- the slash sweeps across, then fades
+	for _, segment in segments do
+		segment.Transparency = 0
+		task.wait(0.015)
+	end
+	task.wait(0.15)
+	for _, segment in segments do
+		TweenService:Create(segment, TweenInfo.new(0.5), { Transparency = 1 }):Play()
+	end
+	task.delay(0.6, function()
+		for _, segment in segments do
+			segment:Destroy()
+		end
+	end)
+end
+
 -- Gives the defender a short window to dodge the throw that is about to land. A dodge uses one of
 -- their charges and means zero damage. Bots dodge by chance instead of pressing a button.
 local function askDodge(match, defender)
@@ -692,6 +842,21 @@ local function runMatch(arena, a, b)
 			end
 			send("turn", match, `{f.name}: throw the pizza!`, f.userId)
 			local ability = waitForThrow(f)
+
+			-- Cleaver Slash: unavoidable, ignores dodges, armour and barriers, and ends the match.
+			if ability == "CleaverSlash" and f.char and f.char.slash and (f.slashes or 0) > 0 then
+				f.slashes -= 1
+				send("rolling", match, `{f.name} raises the Cleaver...`)
+				task.wait(0.9)
+				slashEffect(f, foe)
+				foe.hp = 0
+				flash(foe)
+				send("hit", match, `{f.name} unleashes CLEAVER SLASH! {foe.name} is defeated in one blow!`)
+				task.wait(1.2)
+				knockOut(foe)
+				winner, reason = f, "with a Cleaver Slash"
+				break
+			end
 
 			-- Only spend an ability the player actually owns.
 			local abilityItem

@@ -6,6 +6,8 @@
 --   firstHitBlocked   the first hit taken each match does no damage
 --   rerollAtOrBelow   a die roll at or below this is rerolled once
 --   lifesteal         HP healed each time a throw deals damage
+--   slash             can arm Cleaver Slash once per match: an unavoidable one-hit knockout
+--   coinsLocked       cannot be bought with coins (Robux or admin grant only)
 --
 -- To sell a character for Robux: create a Developer Product for it on the Creator Dashboard
 -- (Monetization > Developer Products), then paste its ID into robuxProductId. 0 = not set up yet.
@@ -89,6 +91,19 @@ Characters.List = {
 		desc = "Heal 3 HP every time your throw deals damage.",
 		color = Color3.fromRGB(60, 90, 160),
 		lifesteal = 3,
+	},
+	-- Not sold for coins: Robux (once robuxProductId is set) or granted by an admin in-game.
+	{
+		id = "HeadChef",
+		name = "Head Chef",
+		price = 0,
+		coinsLocked = true,
+		robuxPrice = 999,
+		robuxProductId = 0,
+		abilityName = "Cleaver Slash",
+		desc = "Once per match, slash the air and defeat your opponent in one blow. Robux or admin only.",
+		color = Color3.fromRGB(255, 215, 80),
+		slash = true,
 	},
 }
 

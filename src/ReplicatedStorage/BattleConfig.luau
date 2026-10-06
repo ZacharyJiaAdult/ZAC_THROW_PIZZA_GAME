@@ -15,6 +15,7 @@ return {
 	RollSeconds = 1.2,
 	DodgesPerMatch = 2, -- each fighter can dodge this many throws per match (a dodge means zero damage)
 	DodgeSeconds = 1.5, -- how long the defender has to press DODGE once a throw is on its way
+	SlashUses = 1, -- Head Chef: Cleaver Slash uses per match
 	IntermissionSeconds = 5,
 	StartingCoins = 100, -- what a new player begins with (progress is saved to a DataStore on a published place)
 	WinCoins = 50,

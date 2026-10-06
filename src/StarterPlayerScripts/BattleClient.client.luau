@@ -22,6 +22,7 @@ local buyCharRobuxEvent = remotes:WaitForChild("BuyCharacterRobux")
 local equipCharEvent = remotes:WaitForChild("EquipCharacter")
 local charResultEvent = remotes:WaitForChild("CharacterResult")
 local dodgeEvent = remotes:WaitForChild("Dodge")
+local adminEvent = remotes:WaitForChild("AdminGrant")
 
 local function make(class, props, parent)
 	local inst = Instance.new(class)
@@ -218,13 +219,19 @@ make("UIListLayout", {
 	Padding = UDim.new(0, 8),
 }, abilityRow)
 
+local mySlashes = 0 -- Cleaver Slash uses left (Head Chef only), updated from the match state
+
 local function refreshAbilities()
 	for _, child in abilityRow:GetChildren() do
 		if child:IsA("TextButton") then
 			child:Destroy()
 		end
 	end
-	if armedAbility and (profile.abilities[armedAbility] or 0) <= 0 then
+	if armedAbility == "CleaverSlash" then
+		if mySlashes <= 0 then
+			armedAbility = nil
+		end
+	elseif armedAbility and (profile.abilities[armedAbility] or 0) <= 0 then
 		armedAbility = nil
 	end
 	local ids = {}
@@ -247,6 +254,24 @@ local function refreshAbilities()
 		make("UICorner", { CornerRadius = UDim.new(0, 8) }, button)
 		button.Activated:Connect(function()
 			armedAbility = if armedAbility == id then nil else id
+			refreshAbilities()
+		end)
+	end
+
+	if mySlashes > 0 then
+		local armed = armedAbility == "CleaverSlash"
+		local button = make("TextButton", {
+			LayoutOrder = 100,
+			Size = UDim2.fromOffset(250, 44),
+			BackgroundColor3 = armed and Color3.new(1, 1, 1) or Color3.fromRGB(190, 40, 40),
+			Font = Enum.Font.GothamBlack,
+			TextSize = 17,
+			TextColor3 = armed and Color3.fromRGB(190, 40, 40) or Color3.new(1, 1, 1),
+			Text = armed and "CLEAVER SLASH - ARMED" or `CLEAVER SLASH ({mySlashes})`,
+		}, abilityRow)
+		make("UICorner", { CornerRadius = UDim.new(0, 8) }, button)
+		button.Activated:Connect(function()
+			armedAbility = if armedAbility == "CleaverSlash" then nil else "CleaverSlash"
 			refreshAbilities()
 		end)
 	end
@@ -564,9 +589,13 @@ local function refreshCharacters()
 				end)
 			end
 		else
-			rowButton(8, `{character.price} coins`, Color3.fromRGB(240, 130, 40), function()
-				buyCharEvent:FireServer(character.id)
-			end)
+			if character.coinsLocked then
+				rowButton(8, "Robux or admin only", Color3.fromRGB(150, 60, 60), nil)
+			else
+				rowButton(8, `{character.price} coins`, Color3.fromRGB(240, 130, 40), function()
+					buyCharEvent:FireServer(character.id)
+				end)
+			end
 			if character.robuxProductId ~= 0 then
 				rowButton(40, `R$ {character.robuxPrice}`, Color3.fromRGB(60, 160, 90), function()
 					buyCharRobuxEvent:FireServer(character.id)
@@ -607,8 +636,138 @@ charResultEvent.OnClientEvent:Connect(function(result)
 	end
 end)
 
+-- Admin panel: only shown to admins. Give or take the Head Chef for anyone in the server ----------
+
+local adminPanel = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(520, 420),
+	BackgroundColor3 = Color3.fromRGB(35, 30, 40),
+	Visible = false,
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 14) }, adminPanel)
+make("UIStroke", { Color = Color3.fromRGB(255, 215, 80), Thickness = 3 }, adminPanel)
+make("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 50),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 28,
+	TextColor3 = Color3.fromRGB(255, 215, 80),
+	Text = "ADMIN: HEAD CHEF",
+}, adminPanel)
+local adminClose = make("TextButton", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -10, 0, 10),
+	Size = UDim2.fromOffset(40, 40),
+	BackgroundColor3 = Color3.fromRGB(180, 50, 50),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 22,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "X",
+}, adminPanel)
+make("UICorner", { CornerRadius = UDim.new(0, 8) }, adminClose)
+local adminResult = make("TextLabel", {
+	Position = UDim2.fromOffset(20, 52),
+	Size = UDim2.new(1, -40, 0, 30),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 16,
+	TextWrapped = true,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "Pick a player.",
+}, adminPanel)
+local adminList = make("ScrollingFrame", {
+	Position = UDim2.fromOffset(20, 90),
+	Size = UDim2.new(1, -40, 1, -110),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 6,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+}, adminPanel)
+make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }, adminList)
+
+local function refreshAdmin()
+	for _, child in adminList:GetChildren() do
+		if not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+	for order, other in Players:GetPlayers() do
+		local row = make("Frame", {
+			LayoutOrder = order,
+			Size = UDim2.new(1, -8, 0, 46),
+			BackgroundColor3 = Color3.fromRGB(55, 48, 62),
+		}, adminList)
+		make("UICorner", { CornerRadius = UDim.new(0, 8) }, row)
+		make("TextLabel", {
+			Position = UDim2.fromOffset(12, 0),
+			Size = UDim2.new(1, -200, 1, 0),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBold,
+			TextSize = 18,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = Color3.new(1, 1, 1),
+			Text = other.DisplayName,
+		}, row)
+		for index, action in { { "GIVE", true, Color3.fromRGB(60, 160, 90) }, { "TAKE", false, Color3.fromRGB(180, 70, 70) } } do
+			local button = make("TextButton", {
+				AnchorPoint = Vector2.new(1, 0.5),
+				Position = UDim2.new(1, -10 - (2 - index) * 90, 0.5, 0),
+				Size = UDim2.fromOffset(80, 30),
+				BackgroundColor3 = action[3],
+				Font = Enum.Font.GothamBlack,
+				TextSize = 15,
+				TextColor3 = Color3.new(1, 1, 1),
+				Text = action[1],
+			}, row)
+			make("UICorner", { CornerRadius = UDim.new(0, 8) }, button)
+			button.Activated:Connect(function()
+				adminEvent:FireServer(other.UserId, action[2])
+			end)
+		end
+	end
+end
+
+local adminButton = make("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 380, 1, -20),
+	Size = UDim2.fromOffset(120, 50),
+	BackgroundColor3 = Color3.fromRGB(150, 120, 30),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 20,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "ADMIN",
+	Visible = false,
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 12) }, adminButton)
+adminButton.Activated:Connect(function()
+	adminPanel.Visible = not adminPanel.Visible
+	refreshAdmin()
+end)
+adminClose.Activated:Connect(function()
+	adminPanel.Visible = false
+end)
+Players.PlayerAdded:Connect(function()
+	if adminPanel.Visible then
+		refreshAdmin()
+	end
+end)
+Players.PlayerRemoving:Connect(function()
+	task.defer(function()
+		if adminPanel.Visible then
+			refreshAdmin()
+		end
+	end)
+end)
+charResultEvent.OnClientEvent:Connect(function(result)
+	adminResult.Text = result.error or result.message or ""
+	adminResult.TextColor3 = result.error and Color3.fromRGB(255, 90, 90) or Color3.fromRGB(120, 230, 140)
+end)
+
 profileEvent.OnClientEvent:Connect(function(data)
 	profile = data
+	adminButton.Visible = profile.isAdmin == true
 	refreshShop()
 	refreshAbilities()
 	refreshCharacters()
@@ -796,6 +955,7 @@ stateEvent.OnClientEvent:Connect(function(state)
 		roundLabel.Text = "Pizza Battle"
 	end
 
+	mySlashes = 0
 	for i, bar in bars do
 		local fighter = state.fighters and state.fighters[i]
 		bar.bg.Visible = fighter ~= nil
@@ -804,6 +964,7 @@ stateEvent.OnClientEvent:Connect(function(state)
 			bar.text.Text = `{fighter.name}  {fighter.hp}/{fighter.maxHp}  dodge x{fighter.dodges or 0}`
 			if fighter.userId == player.UserId then
 				dodgeButton.Text = `DODGE! ({fighter.dodges or 0} left)`
+				mySlashes = fighter.slashes or 0
 			end
 			bar.stroke.Enabled = state.phase == "turn" and state.turnUserId == fighter.userId
 			TweenService:Create(bar.fill, TweenInfo.new(0.4), {

@@ -1,9 +1,12 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local DataStoreService = game:GetService("DataStoreService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local Config = require(ReplicatedStorage:WaitForChild("BattleConfig"))
 local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
+local Characters = require(ReplicatedStorage:WaitForChild("BattleCharacters"))
 local ArenaMap = require(script.Parent:WaitForChild("ArenaMap"))
 
 local remotes = Instance.new("Folder")
@@ -24,6 +27,10 @@ local crateEvent = makeRemote("CrateResult")
 local travelEvent = makeRemote("Travel")
 local botMenuEvent = makeRemote("BotMenu")
 local chooseBotEvent = makeRemote("ChooseBot")
+local buyCharEvent = makeRemote("BuyCharacter")
+local buyCharRobuxEvent = makeRemote("BuyCharacterRobux")
+local equipCharEvent = makeRemote("EquipCharacter")
+local charResultEvent = makeRemote("CharacterResult")
 remotes.Parent = ReplicatedStorage
 
 local PAD_OFFSET = 18
@@ -43,13 +50,34 @@ local fightingArena = {} -- the arena a player is fighting in
 local viewing = {} -- the arena whose HUD a player sees (fighting or standing in its stands)
 local pendingInfo = {} -- countdown info shown to players about to fight
 
--- Shop profiles live in memory only (no saving yet).
+-- Shop profiles are saved to a DataStore. Studio needs "Enable Studio Access to API Services" in Game
+-- Settings > Security, and the place must be published. If loading fails the profile still works for the
+-- session but is not saved, so a failed load can never overwrite saved data with defaults.
+local storeOk, profileStore = pcall(function()
+	return DataStoreService:GetDataStore("PizzaBattleProfiles_v1")
+end)
+if not storeOk then
+	warn("DataStore unavailable, progress will not be saved: " .. tostring(profileStore))
+	profileStore = nil
+end
 local profiles = {}
+local loaded = {} -- player -> true once their saved data was loaded (or loading gave up)
+
+local function newProfile()
+	return {
+		coins = Config.StartingCoins,
+		armour = {},
+		abilities = {},
+		characters = { [Characters.Default] = true },
+		character = Characters.Default,
+		receipts = {},
+	}
+end
 
 local function getProfile(player)
 	local profile = profiles[player]
 	if not profile then
-		profile = { coins = Config.StartingCoins, armour = {}, abilities = {} }
+		profile = newProfile()
 		profiles[player] = profile
 	end
 	return profile
@@ -61,13 +89,89 @@ local function sendProfile(player)
 	end
 end
 
+local function profileKey(player)
+	return `player_{player.UserId}`
+end
+
+local function saveProfile(player)
+	local profile = profiles[player]
+	if not profile or profile.noSave or not profileStore then
+		return false
+	end
+	local ok, err = pcall(function()
+		profileStore:SetAsync(profileKey(player), {
+			coins = profile.coins,
+			armour = profile.armour,
+			equipped = profile.equipped,
+			abilities = profile.abilities,
+			characters = profile.characters,
+			character = profile.character,
+			receipts = profile.receipts,
+		})
+	end)
+	if not ok then
+		warn(`Saving {player.Name} failed: {err}`)
+	end
+	return ok
+end
+
+local function loadProfile(player)
+	local ok, data = pcall(function()
+		if not profileStore then
+			error("no DataStore")
+		end
+		return profileStore:GetAsync(profileKey(player))
+	end)
+	if loaded[player] or player.Parent ~= Players then
+		return
+	end
+	local profile = getProfile(player)
+	if ok then
+		if typeof(data) == "table" then
+			profile.coins = data.coins or profile.coins
+			profile.armour = data.armour or profile.armour
+			profile.equipped = data.equipped
+			profile.abilities = data.abilities or profile.abilities
+			profile.characters = data.characters or profile.characters
+			profile.characters[Characters.Default] = true
+			profile.character = data.character or profile.character
+			if not profile.characters[profile.character] then
+				profile.character = Characters.Default
+			end
+			profile.receipts = data.receipts or profile.receipts
+		end
+	else
+		profile.noSave = true
+		warn(`Loading {player.Name} failed, their progress will not be saved: {data}`)
+	end
+	loaded[player] = true
+end
+
 startEvent.OnServerEvent:Connect(function(player)
+	local waited = 0
+	while not loaded[player] and waited < 10 and player.Parent == Players do
+		task.wait(0.2)
+		waited += 0.2
+	end
+	if not loaded[player] then
+		loaded[player] = true
+		getProfile(player).noSave = true
+	end
 	ready[player] = true
 	sendProfile(player)
 end)
 
+Players.PlayerAdded:Connect(function(player)
+	task.spawn(loadProfile, player)
+end)
+for _, player in Players:GetPlayers() do
+	task.spawn(loadProfile, player)
+end
+
 Players.PlayerRemoving:Connect(function(player)
+	saveProfile(player)
 	ready[player] = nil
+	loaded[player] = nil
 	inZone[player] = nil
 	zoneSince[player] = nil
 	botChoice[player] = nil
@@ -76,6 +180,21 @@ Players.PlayerRemoving:Connect(function(player)
 	viewing[player] = nil
 	pendingInfo[player] = nil
 	profiles[player] = nil
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(60)
+		for _, player in Players:GetPlayers() do
+			saveProfile(player)
+		end
+	end
+end)
+
+game:BindToClose(function()
+	for _, player in Players:GetPlayers() do
+		saveProfile(player)
+	end
 end)
 
 local function rollCrate(crate)
@@ -140,6 +259,83 @@ equipEvent.OnServerEvent:Connect(function(player, itemId)
 	end
 end)
 
+-- Special characters ---------------------------------------------------------
+
+-- Coin purchase: the character is unlocked and equipped straight away.
+buyCharEvent.OnServerEvent:Connect(function(player, charId)
+	local character = typeof(charId) == "string" and Characters.ById[charId]
+	if not character then
+		return
+	end
+	local profile = getProfile(player)
+	if profile.characters[charId] then
+		charResultEvent:FireClient(player, { message = `You already own {character.name}.` })
+		return
+	end
+	if profile.coins < character.price then
+		charResultEvent:FireClient(player, { error = "Not enough coins!" })
+		return
+	end
+	profile.coins -= character.price
+	profile.characters[charId] = true
+	profile.character = charId
+	charResultEvent:FireClient(player, {
+		message = `Unlocked {character.name}! {character.abilityName}: {character.desc}`,
+	})
+	sendProfile(player)
+	task.spawn(saveProfile, player)
+end)
+
+equipCharEvent.OnServerEvent:Connect(function(player, charId)
+	local profile = getProfile(player)
+	if typeof(charId) == "string" and profile.characters[charId] then
+		profile.character = charId
+		sendProfile(player)
+	end
+end)
+
+-- Robux purchase: a developer product, granted in ProcessReceipt below.
+buyCharRobuxEvent.OnServerEvent:Connect(function(player, charId)
+	local character = typeof(charId) == "string" and Characters.ById[charId]
+	if not character then
+		return
+	end
+	if getProfile(player).characters[charId] then
+		charResultEvent:FireClient(player, { message = `You already own {character.name}.` })
+	elseif character.robuxProductId == 0 then
+		charResultEvent:FireClient(player, { error = "Robux purchase isn't set up for this character yet." })
+	else
+		MarketplaceService:PromptProductPurchase(player, character.robuxProductId)
+	end
+end)
+
+MarketplaceService.ProcessReceipt = function(receipt)
+	local player = Players:GetPlayerByUserId(receipt.PlayerId)
+	local character = Characters.byProduct(receipt.ProductId)
+	if not player or not character then
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	local profile = getProfile(player)
+	local purchaseKey = tostring(receipt.PurchaseId)
+	if profile.receipts[purchaseKey] then
+		return Enum.ProductPurchaseDecision.PurchaseGranted -- already granted
+	end
+
+	profile.receipts[purchaseKey] = true
+	profile.characters[character.id] = true
+	profile.character = character.id
+	-- The purchase must be saved before it is confirmed, otherwise a crash could lose a paid unlock.
+	if not saveProfile(player) then
+		profile.receipts[purchaseKey] = nil
+		return Enum.ProductPurchaseDecision.NotProcessedYet
+	end
+	charResultEvent:FireClient(player, {
+		message = `Unlocked {character.name}! {character.abilityName}: {character.desc}`,
+	})
+	sendProfile(player)
+	return Enum.ProductPurchaseDecision.PurchaseGranted
+end
+
 -- Match state for HUDs -------------------------------------------------------
 
 -- Each arena keeps its own latest state; only players fighting in it or standing in its stands get it.
@@ -185,13 +381,16 @@ local function getBotLevel(id)
 end
 
 local function newFighter(player)
+	local profile = getProfile(player)
+	local character = Characters.ById[profile.character]
 	return {
 		player = player,
 		name = player.DisplayName,
 		userId = player.UserId,
 		hp = Config.StartingHealth,
 		maxHp = Config.StartingHealth,
-		armour = Items.armourReduction(getProfile(player).equipped),
+		armour = Items.armourReduction(profile.equipped) + (character and character.armourBonus or 0),
+		char = character, -- the special character, which carries the ability fields
 	}
 end
 
@@ -231,6 +430,38 @@ local function isReady(f)
 	return getRoot(f) ~= nil
 end
 
+-- Special characters recolour the avatar and wear a name tag. Respawning restores the normal look.
+local function applyLook(f)
+	local character = f.player.Character
+	local special = f.char
+	if not character or not special or special.id == Characters.Default then
+		return
+	end
+	local bodyColors = character:FindFirstChildOfClass("BodyColors")
+	if bodyColors then
+		bodyColors.TorsoColor3 = special.color
+		bodyColors.LeftArmColor3 = special.color
+		bodyColors.RightArmColor3 = special.color
+	end
+	local head = character:FindFirstChild("Head")
+	if head then
+		local tag = Instance.new("BillboardGui")
+		tag.Size = UDim2.fromOffset(240, 40)
+		tag.StudsOffset = Vector3.new(0, 3.2, 0)
+		tag.AlwaysOnTop = true
+		tag.Parent = head
+		local label = Instance.new("TextLabel")
+		label.Size = UDim2.fromScale(1, 1)
+		label.BackgroundTransparency = 1
+		label.Font = Enum.Font.GothamBlack
+		label.TextScaled = true
+		label.TextColor3 = special.color
+		label.TextStrokeTransparency = 0
+		label.Text = `{special.name} - {special.abilityName}`
+		label.Parent = tag
+	end
+end
+
 local function placeFighter(f, side, arena)
 	local root = getRoot(f)
 	if not root then
@@ -240,6 +471,9 @@ local function placeFighter(f, side, arena)
 	local lookAt = arena.center + Vector3.new(-side * PAD_OFFSET, 4, 0)
 	getCharacter(f):PivotTo(CFrame.lookAt(pos, lookAt))
 	root.Anchored = true
+	if not f.isBot then
+		applyLook(f)
+	end
 	return true
 end
 
@@ -325,6 +559,9 @@ local function rollDice(f, ability)
 	label.Parent = gui
 
 	local roll = math.random(1, Config.DieSides)
+	if f.char and f.char.rerollAtOrBelow and roll <= f.char.rerollAtOrBelow then
+		roll = math.random(1, Config.DieSides)
+	end
 	if ability == "DoubleDice" or f.rollMode == "advantage" then
 		roll = math.max(roll, math.random(1, Config.DieSides))
 	elseif f.rollMode == "disadvantage" then
@@ -402,6 +639,9 @@ local function runMatch(arena, a, b)
 				break
 			end
 
+			if f.char and f.char.healPerTurn then
+				f.hp = math.min(f.maxHp, f.hp + f.char.healPerTurn)
+			end
 			send("turn", match, `{f.name}: throw the pizza!`, f.userId)
 			local ability = waitForThrow(f)
 
@@ -434,16 +674,33 @@ local function runMatch(arena, a, b)
 			die:Destroy()
 
 			local damage = roll
+			local notes = {}
 			if ability == "ExtraCheese" then
 				damage += Items.CheeseBonus
 			end
+			if f.char and f.char.critChance and math.random() < f.char.critChance then
+				damage *= 2
+				table.insert(notes, `{f.char.abilityName}: double damage!`)
+			end
 			local blocked = math.min(foe.armour, damage - 1) -- a hit always does at least 1
 			damage -= blocked
+			if blocked > 0 then
+				table.insert(notes, `{blocked} blocked by armour`)
+			end
+			if foe.char and foe.char.firstHitBlocked and not foe.barrierUsed then
+				foe.barrierUsed = true
+				damage = 0
+				table.insert(notes, `{foe.char.abilityName} absorbed the hit!`)
+			end
 
 			throwPizza(f, foe)
 			foe.hp = math.max(0, foe.hp - damage)
 			flash(foe)
-			local note = blocked > 0 and ` ({blocked} blocked by armour)` or ""
+			if f.char and f.char.lifesteal and damage > 0 then
+				f.hp = math.min(f.maxHp, f.hp + f.char.lifesteal)
+				table.insert(notes, `{f.char.abilityName}: +{f.char.lifesteal} HP`)
+			end
+			local note = #notes > 0 and ` ({table.concat(notes, ", ")})` or ""
 			send("hit", match, `{f.name} hits {foe.name} for {damage} damage!{note}`)
 			task.wait(1.2)
 

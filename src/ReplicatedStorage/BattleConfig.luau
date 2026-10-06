@@ -14,7 +14,7 @@ return {
 	TurnSeconds = 15, -- auto-throws if the player does nothing
 	RollSeconds = 1.2,
 	IntermissionSeconds = 5,
-	StartingCoins = 100, -- progress is not saved between sessions yet
+	StartingCoins = 100, -- what a new player begins with (progress is saved to a DataStore on a published place)
 	WinCoins = 50,
 	LossCoins = 20,
 	ResultSeconds = 6, 

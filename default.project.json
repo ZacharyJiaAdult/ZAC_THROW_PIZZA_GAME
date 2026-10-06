@@ -5,7 +5,8 @@
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
       "BattleConfig": { "$path": "src/ReplicatedStorage/BattleConfig.luau" },
-      "BattleItems": { "$path": "src/ReplicatedStorage/BattleItems.luau" }
+      "BattleItems": { "$path": "src/ReplicatedStorage/BattleItems.luau" },
+      "BattleCharacters": { "$path": "src/ReplicatedStorage/BattleCharacters.luau" }
     },
     "ServerScriptService": {
       "$className": "ServerScriptService",

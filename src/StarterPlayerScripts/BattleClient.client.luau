@@ -16,6 +16,11 @@ local botMenuEvent = remotes:WaitForChild("BotMenu")
 local chooseBotEvent = remotes:WaitForChild("ChooseBot")
 local Config = require(ReplicatedStorage:WaitForChild("BattleConfig"))
 local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
+local Characters = require(ReplicatedStorage:WaitForChild("BattleCharacters"))
+local buyCharEvent = remotes:WaitForChild("BuyCharacter")
+local buyCharRobuxEvent = remotes:WaitForChild("BuyCharacterRobux")
+local equipCharEvent = remotes:WaitForChild("EquipCharacter")
+local charResultEvent = remotes:WaitForChild("CharacterResult")
 
 local function make(class, props, parent)
 	local inst = Instance.new(class)
@@ -162,7 +167,7 @@ end)
 
 -- Coins, abilities and the crate shop ------------------------------------------------
 
-local profile = { coins = 0, armour = {}, abilities = {} }
+local profile = { coins = 0, armour = {}, abilities = {}, characters = {} }
 local armedAbility = nil
 
 local coinsLabel = make("TextLabel", {
@@ -415,10 +420,176 @@ closeButton.Activated:Connect(function()
 	shop.Visible = false
 end)
 
+-- Special characters: buy with coins or Robux, then equip ---------------------------------
+
+local charPanel = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(640, 500),
+	BackgroundColor3 = Color3.fromRGB(35, 30, 40),
+	Visible = false,
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 14) }, charPanel)
+make("UIStroke", { Color = Color3.fromRGB(240, 130, 40), Thickness = 3 }, charPanel)
+make("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 50),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 30,
+	TextColor3 = Color3.fromRGB(255, 220, 60),
+	Text = "SPECIAL CHARACTERS",
+}, charPanel)
+local charClose = make("TextButton", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -10, 0, 10),
+	Size = UDim2.fromOffset(40, 40),
+	BackgroundColor3 = Color3.fromRGB(180, 50, 50),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 22,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "X",
+}, charPanel)
+make("UICorner", { CornerRadius = UDim.new(0, 8) }, charClose)
+local charResultLabel = make("TextLabel", {
+	Position = UDim2.fromOffset(20, 52),
+	Size = UDim2.new(1, -40, 0, 36),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 16,
+	TextWrapped = true,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "Each character has one special ability.",
+}, charPanel)
+local charList = make("ScrollingFrame", {
+	Position = UDim2.fromOffset(20, 96),
+	Size = UDim2.new(1, -40, 1, -116),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	ScrollBarThickness = 6,
+	CanvasSize = UDim2.new(),
+	AutomaticCanvasSize = Enum.AutomaticSize.Y,
+}, charPanel)
+make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 8) }, charList)
+
+local function refreshCharacters()
+	for _, child in charList:GetChildren() do
+		if not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+	local owned = profile.characters or {}
+	for order, character in Characters.List do
+		local isOwned = owned[character.id] == true
+		local isEquipped = profile.character == character.id
+		local row = make("Frame", {
+			LayoutOrder = order,
+			Size = UDim2.new(1, -8, 0, 74),
+			BackgroundColor3 = isEquipped and Color3.fromRGB(50, 80, 55) or Color3.fromRGB(55, 48, 62),
+		}, charList)
+		make("UICorner", { CornerRadius = UDim.new(0, 10) }, row)
+		make("Frame", {
+			Size = UDim2.new(0, 8, 1, 0),
+			BackgroundColor3 = character.color,
+			BorderSizePixel = 0,
+		}, row)
+		make("TextLabel", {
+			Position = UDim2.fromOffset(20, 6),
+			Size = UDim2.new(1, -190, 0, 24),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBlack,
+			TextSize = 20,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextColor3 = character.color,
+			Text = `{character.name}  -  {character.abilityName}`,
+		}, row)
+		make("TextLabel", {
+			Position = UDim2.fromOffset(20, 32),
+			Size = UDim2.new(1, -190, 0, 36),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.Gotham,
+			TextSize = 15,
+			TextWrapped = true,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextColor3 = Color3.new(1, 1, 1),
+			Text = character.desc,
+		}, row)
+
+		local function rowButton(y, text, color, onClick)
+			local button = make("TextButton", {
+				AnchorPoint = Vector2.new(1, 0),
+				Position = UDim2.new(1, -10, 0, y),
+				Size = UDim2.fromOffset(150, 28),
+				BackgroundColor3 = color,
+				Font = Enum.Font.GothamBold,
+				TextSize = 14,
+				TextColor3 = Color3.new(1, 1, 1),
+				Text = text,
+				AutoButtonColor = onClick ~= nil,
+			}, row)
+			make("UICorner", { CornerRadius = UDim.new(0, 8) }, button)
+			if onClick then
+				button.Activated:Connect(onClick)
+			end
+		end
+
+		if isOwned then
+			if isEquipped then
+				rowButton(23, "EQUIPPED", Color3.fromRGB(70, 130, 70), nil)
+			else
+				rowButton(23, "EQUIP", Color3.fromRGB(70, 130, 220), function()
+					equipCharEvent:FireServer(character.id)
+				end)
+			end
+		else
+			rowButton(8, `{character.price} coins`, Color3.fromRGB(240, 130, 40), function()
+				buyCharEvent:FireServer(character.id)
+			end)
+			if character.robuxProductId ~= 0 then
+				rowButton(40, `R$ {character.robuxPrice}`, Color3.fromRGB(60, 160, 90), function()
+					buyCharRobuxEvent:FireServer(character.id)
+				end)
+			else
+				rowButton(40, "R$ (not set up)", Color3.fromRGB(90, 90, 100), nil)
+			end
+		end
+	end
+end
+
+local charButton = make("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 170, 1, -20),
+	Size = UDim2.fromOffset(190, 50),
+	BackgroundColor3 = Color3.fromRGB(200, 90, 60),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 20,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "CHARACTERS",
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 12) }, charButton)
+charButton.Activated:Connect(function()
+	charPanel.Visible = not charPanel.Visible
+	refreshCharacters()
+end)
+charClose.Activated:Connect(function()
+	charPanel.Visible = false
+end)
+
+charResultEvent.OnClientEvent:Connect(function(result)
+	if result.error then
+		charResultLabel.Text = result.error
+		charResultLabel.TextColor3 = Color3.fromRGB(255, 90, 90)
+	else
+		charResultLabel.Text = result.message or ""
+		charResultLabel.TextColor3 = Color3.fromRGB(120, 230, 140)
+	end
+end)
+
 profileEvent.OnClientEvent:Connect(function(data)
 	profile = data
 	refreshShop()
 	refreshAbilities()
+	refreshCharacters()
 end)
 
 crateEvent.OnClientEvent:Connect(function(result)

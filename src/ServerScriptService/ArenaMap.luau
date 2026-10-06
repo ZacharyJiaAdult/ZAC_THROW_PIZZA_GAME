@@ -125,6 +125,150 @@ local function buildArena(map, id, center)
 	addSignText(board, Enum.NormalId.Back, `ARENA {id}`, nil)
 end
 
+-- Free For All: a big open arena with cover pillars, glass walls and stands on both long sides.
+local FFA_ARENA_X = 250
+local FFA_WAITING_X = 150
+
+local function buildFFAArena(map, center)
+	local cx, cz = center.X, center.Z
+
+	part(map, {
+		Name = "FFAFloor",
+		Size = Vector3.new(80, 2, 80),
+		Position = center,
+		Material = Enum.Material.Slate,
+		Color = Color3.fromRGB(95, 65, 145),
+	})
+	-- cover to hide behind: thrown pizzas splat against these
+	for _, offset in { { -14, -14 }, { 14, -14 }, { -14, 14 }, { 14, 14 } } do
+		part(map, {
+			Name = "FFAPillar",
+			Size = Vector3.new(6, 12, 6),
+			Position = Vector3.new(cx + offset[1], 8, cz + offset[2]),
+			Material = Enum.Material.Concrete,
+			Color = Color3.fromRGB(120, 110, 140),
+		})
+	end
+
+	local function wall(name, size, position)
+		part(map, {
+			Name = name,
+			Size = size,
+			Position = position,
+			Material = Enum.Material.SmoothPlastic,
+			Color = Color3.fromRGB(190, 170, 235),
+			Transparency = 0.85,
+		})
+	end
+	wall("FFAGlassSouth", Vector3.new(84, 14, 1), Vector3.new(cx, 9, cz + 41))
+	wall("FFAGlassNorth", Vector3.new(84, 14, 1), Vector3.new(cx, 9, cz - 41))
+	wall("FFAGlassWest", Vector3.new(1, 14, 84), Vector3.new(cx - 41, 9, cz))
+	wall("FFAGlassEast", Vector3.new(1, 14, 84), Vector3.new(cx + 41, 9, cz))
+
+	for tier = 1, 4 do
+		local height = tier * 2
+		local color = if tier % 2 == 0 then Color3.fromRGB(125, 110, 150) else Color3.fromRGB(95, 85, 120)
+		part(map, {
+			Name = "FFAStandSouth",
+			Size = Vector3.new(90, height, 3),
+			Position = Vector3.new(cx, height / 2, cz + 44 + (tier - 1) * 3),
+			Material = Enum.Material.Concrete,
+			Color = color,
+		})
+		part(map, {
+			Name = "FFAStandNorth",
+			Size = Vector3.new(90, height, 3),
+			Position = Vector3.new(cx, height / 2, cz - 44 - (tier - 1) * 3),
+			Material = Enum.Material.Concrete,
+			Color = color,
+		})
+	end
+
+	for _, dx in { -14, 14 } do
+		part(map, {
+			Name = "FFASignPost",
+			Size = Vector3.new(2, 16, 2),
+			Position = Vector3.new(cx + dx, 8, cz - 62),
+			Material = Enum.Material.Wood,
+			Color = Color3.fromRGB(110, 75, 45),
+		})
+	end
+	local board = part(map, {
+		Name = "FFASign",
+		Size = Vector3.new(34, 7, 1),
+		Position = Vector3.new(cx, 18, cz - 62),
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(40, 30, 35),
+	})
+	addSignText(board, Enum.NormalId.Back, "FREE FOR ALL", nil)
+end
+
+-- The Free For All's own waiting area, with a kiosk that adds bots so a small group can still play.
+local function buildFFAWaiting(map)
+	part(map, {
+		Name = "FFAWaitingFrame",
+		Size = Vector3.new(64, 0.9, 34),
+		Position = Vector3.new(FFA_WAITING_X, 0.45, -45),
+		Material = Enum.Material.Neon,
+		Color = Color3.fromRGB(200, 90, 255),
+	})
+	local zone = part(map, {
+		Name = "FFAWaitingZone",
+		Size = Vector3.new(60, 1, 30),
+		Position = Vector3.new(FFA_WAITING_X, 0.5, -45),
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(120, 70, 190),
+	})
+	for _, dx in { -20, 20 } do
+		part(map, {
+			Name = "FFASignPost",
+			Size = Vector3.new(2, 12, 2),
+			Position = Vector3.new(FFA_WAITING_X + dx, 6, -61),
+			Material = Enum.Material.Wood,
+			Color = Color3.fromRGB(110, 75, 45),
+		})
+	end
+	local board = part(map, {
+		Name = "FFAWaitingSign",
+		Size = Vector3.new(44, 10, 1),
+		Position = Vector3.new(FFA_WAITING_X, 13, -61),
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(40, 30, 35),
+	})
+	addSignText(board, Enum.NormalId.Back, "FREE FOR ALL", "Real-time brawl: last one standing wins")
+
+	local kiosk = part(map, {
+		Name = "FFABotKiosk",
+		Size = Vector3.new(5, 4, 5),
+		Position = Vector3.new(FFA_WAITING_X + 22, 3, -45),
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(160, 60, 200),
+	})
+	local kioskGui = Instance.new("BillboardGui")
+	kioskGui.Size = UDim2.fromOffset(220, 50)
+	kioskGui.StudsOffset = Vector3.new(0, 4, 0)
+	kioskGui.AlwaysOnTop = true
+	kioskGui.Parent = kiosk
+	local kioskLabel = Instance.new("TextLabel")
+	kioskLabel.Size = UDim2.fromScale(1, 1)
+	kioskLabel.BackgroundTransparency = 1
+	kioskLabel.Font = Enum.Font.GothamBlack
+	kioskLabel.TextScaled = true
+	kioskLabel.TextColor3 = Color3.fromRGB(255, 220, 60)
+	kioskLabel.TextStrokeTransparency = 0
+	kioskLabel.Text = "ADD BOTS"
+	kioskLabel.Parent = kioskGui
+
+	local prompt = Instance.new("ProximityPrompt")
+	prompt.ActionText = "Add a bot"
+	prompt.ObjectText = "Free For All bots"
+	prompt.HoldDuration = 0.3
+	prompt.MaxActivationDistance = 10
+	prompt.RequiresLineOfSight = false
+	prompt.Parent = kiosk
+	return zone, prompt
+end
+
 function ArenaMap.build(count)
 	local old = workspace:FindFirstChild("PizzaMap")
 	if old then
@@ -286,6 +430,43 @@ function ArenaMap.build(count)
 	trophyPrompt.RequiresLineOfSight = false
 	trophyPrompt.Parent = pedestal
 
+	-- Free For All -----------------------------------------------------------
+	local ffaCenter = Vector3.new(FFA_ARENA_X, 1, ARENA_Z)
+	buildFFAArena(map, ffaCenter)
+	local ffaZone, ffaPrompt = buildFFAWaiting(map)
+
+	-- a signpost in the main Waiting Area pointing east
+	local pointer = part(map, {
+		Name = "FFAPointer",
+		Size = Vector3.new(28, 6, 1),
+		Position = Vector3.new(44, 8, -62),
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(40, 30, 35),
+	})
+	addSignText(pointer, Enum.NormalId.Back, "FREE FOR ALL >>>", nil)
+
+	local ffa = {
+		id = "FFA",
+		name = "Free For All",
+		center = ffaCenter,
+		regionCFrame = CFrame.new(FFA_ARENA_X, 10, ARENA_Z),
+		regionSize = Vector3.new(100, 40, 112),
+		-- one spawn point per fighter, evenly around the arena, all facing the middle
+		spawnPoints = function(n)
+			local points = {}
+			for i = 1, n do
+				local angle = (i - 1) / n * math.pi * 2
+				local pos = ffaCenter + Vector3.new(math.cos(angle) * 28, 4, math.sin(angle) * 28)
+				points[i] = CFrame.lookAt(pos, Vector3.new(ffaCenter.X, pos.Y, ffaCenter.Z))
+			end
+			return points
+		end,
+		standsSpot = function()
+			local pos = Vector3.new(FFA_ARENA_X + math.random(-30, 30), 9.5, ARENA_Z + 50)
+			return CFrame.lookAt(pos, Vector3.new(FFA_ARENA_X, pos.Y, ARENA_Z))
+		end,
+	}
+
 	local spawnLocation = workspace:FindFirstChildWhichIsA("SpawnLocation")
 
 	return {
@@ -294,6 +475,9 @@ function ArenaMap.build(count)
 		zone = zone,
 		botPrompt = prompt,
 		trophyPrompt = trophyPrompt,
+		ffa = ffa,
+		ffaZone = ffaZone,
+		ffaBotPrompt = ffaPrompt,
 		lobbySpot = function()
 			if spawnLocation then
 				return spawnLocation.CFrame + Vector3.new(0, 4, 0)

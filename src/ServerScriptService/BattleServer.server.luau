@@ -34,6 +34,9 @@ local equipCharEvent = makeRemote("EquipCharacter")
 local charResultEvent = makeRemote("CharacterResult")
 local dodgeEvent = makeRemote("Dodge")
 local adminEvent = makeRemote("AdminGrant")
+local ffaThrowEvent = makeRemote("FFAThrow")
+local ffaDodgeEvent = makeRemote("FFADodge")
+local ffaAbilityEvent = makeRemote("FFAAbility")
 remotes.Parent = ReplicatedStorage
 
 local PAD_OFFSET = 18
@@ -52,6 +55,11 @@ local reserved = {} -- in a match countdown or a match
 local fightingArena = {} -- the arena a player is fighting in
 local viewing = {} -- the arena whose HUD a player sees (fighting or standing in its stands)
 local pendingInfo = {} -- countdown info shown to players about to fight
+local inFFAZone = {} -- standing in the Free For All waiting area
+local ffaZoneSince = {} -- when they stepped in (queue order)
+local ffaPending = {} -- seconds left on the Free For All countdown, for players in it
+local ffaPlayers = {} -- player -> { match, fighter } while they are in a Free For All
+local ffaBots = 0 -- bots requested for the next Free For All (set at its kiosk)
 
 -- Shop profiles are saved to a DataStore. Studio needs "Enable Studio Access to API Services" in Game
 -- Settings > Security, and the place must be published. If loading fails the profile still works for the
@@ -275,6 +283,10 @@ Players.PlayerRemoving:Connect(function(player)
 	fightingArena[player] = nil
 	viewing[player] = nil
 	pendingInfo[player] = nil
+	inFFAZone[player] = nil
+	ffaZoneSince[player] = nil
+	ffaPending[player] = nil
+	ffaPlayers[player] = nil
 	profiles[player] = nil
 end)
 
@@ -511,7 +523,8 @@ local function sendToViewers(arena, state)
 end
 
 local function idleState(arena)
-	return { phase = "lobby", arenaId = arena.id, message = `Arena {arena.id}: no match right now` }
+	local name = arena.name or `Arena {arena.id}`
+	return { phase = "lobby", arenaId = arena.id, arenaName = arena.name, message = `{name}: no match right now` }
 end
 
 local function send(phase, match, message, turnUserId)
@@ -1123,6 +1136,503 @@ local function runMatch(arena, a, b)
 	end
 end
 
+-- Free For All (real time) ---------------------------------------------------
+-- No turns: everyone moves freely and throws pizzas on a cooldown. A pizza that reaches someone rolls the
+-- d20 for damage. A dodge roll makes you take zero damage for a moment. Last one standing wins.
+
+local ffaArena = map.ffa
+local viewAreas = table.clone(arenas) -- every arena a player can watch, for the HUD
+table.insert(viewAreas, ffaArena)
+
+local function notify(f, text)
+	if not f.isBot and f.player.Parent == Players then
+		charResultEvent:FireClient(f.player, { error = text })
+	end
+end
+
+-- A number or word that floats up from a fighter's head and fades.
+local function floatText(f, text, color)
+	local character = getCharacter(f)
+	local head = character and character:FindFirstChild("Head")
+	if not head then
+		return
+	end
+	local gui = Instance.new("BillboardGui")
+	gui.Size = UDim2.fromOffset(170, 50)
+	gui.StudsOffset = Vector3.new(0, 3, 0)
+	gui.AlwaysOnTop = true
+	gui.Parent = head
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.fromScale(1, 1)
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBlack
+	label.TextScaled = true
+	label.TextColor3 = color
+	label.TextStrokeTransparency = 0
+	label.Text = text
+	label.Parent = gui
+	TweenService:Create(gui, TweenInfo.new(0.9), { StudsOffset = Vector3.new(0, 6.5, 0) }):Play()
+	TweenService:Create(label, TweenInfo.new(0.9), { TextTransparency = 1, TextStrokeTransparency = 1 }):Play()
+	task.delay(1, function()
+		gui:Destroy()
+	end)
+end
+
+local function ffaSend(match, phase, message)
+	if message then
+		match.lastMessage = message
+	end
+	local list = {}
+	for _, f in match.fighters do
+		table.insert(list, {
+			userId = f.userId,
+			name = f.name,
+			hp = f.hp,
+			maxHp = f.maxHp,
+			alive = f.alive,
+			kills = f.kills,
+			activeId = f.activeId,
+			activeLabel = f.activeLabel,
+			activeLeft = f.activeLeft,
+		})
+	end
+	sendToViewers(match.arena, {
+		phase = phase,
+		ffa = true,
+		arenaId = match.arena.id,
+		arenaName = match.arena.name,
+		fighters = list,
+		timeLeft = math.max(0, math.ceil(match.endsAt - os.clock())),
+		message = match.lastMessage,
+	})
+end
+
+local function nearestEnemy(match, f, maxDistance)
+	local root = getRoot(f)
+	if not root then
+		return nil
+	end
+	local best, bestDistance = nil, maxDistance
+	for _, v in match.fighters do
+		if v ~= f and v.alive then
+			local vr = getRoot(v)
+			if vr then
+				local d = (vr.Position - root.Position).Magnitude
+				if d < bestDistance then
+					best, bestDistance = v, d
+				end
+			end
+		end
+	end
+	return best
+end
+
+local function ffaEliminate(match, victim, killer)
+	victim.alive = false
+	victim.hp = 0
+	if killer and killer ~= victim then
+		killer.kills += 1
+	end
+	knockOut(victim)
+	ffaSend(match, "ffa", `{killer and killer.name or "Someone"} eliminated {victim.name}!`)
+	if not victim.isBot then
+		-- an eliminated player respawns and watches from the stands
+		local player = victim.player
+		task.delay(3, function()
+			if player.Parent ~= Players or not match.running then
+				return
+			end
+			player:LoadCharacter()
+			local character = player.Character or player.CharacterAdded:Wait()
+			local root = character:WaitForChild("HumanoidRootPart", 5)
+			if root and match.running then
+				character:PivotTo(match.arena.standsSpot())
+			end
+		end)
+	end
+end
+
+local function ffaRoll(attacker)
+	local roll = math.random(1, Config.DieSides)
+	if attacker.char and attacker.char.rerollAtOrBelow and roll <= attacker.char.rerollAtOrBelow then
+		roll = math.random(1, Config.DieSides)
+	end
+	if attacker.rollMode == "advantage" then
+		roll = math.max(roll, math.random(1, Config.DieSides))
+	elseif attacker.rollMode == "disadvantage" then
+		roll = math.min(roll, math.random(1, Config.DieSides))
+	end
+	return roll
+end
+
+-- A pizza reached `victim`: roll the d20 for damage (a dodge roll in progress means zero damage).
+local function ffaHit(match, attacker, victim)
+	if not victim.alive or not attacker.alive then
+		return
+	end
+	local now = os.clock()
+	-- bots dodge by chance; players dodge by pressing their roll key
+	if victim.isBot and now >= victim.dodgeReadyAt and math.random() < (victim.dodgeChance or 0) then
+		victim.dodgeReadyAt = now + Config.FFADodgeCooldown
+		victim.rollingUntil = now + Config.FFADodgeSeconds
+	end
+	if now < victim.rollingUntil then
+		floatText(victim, "DODGED!", Color3.fromRGB(120, 200, 255))
+		return
+	end
+
+	local roll = ffaRoll(attacker)
+	local damage = roll
+	local tag = `d20: {roll}`
+	if attacker.char and attacker.char.critChance and math.random() < attacker.char.critChance then
+		damage *= 2
+		tag ..= " CRIT!"
+	end
+	local blocked = math.min(victim.armour, damage - 1) -- a hit always does at least 1
+	damage -= blocked
+	if victim.char and victim.char.firstHitBlocked and not victim.barrierUsed then
+		victim.barrierUsed = true
+		damage = 0
+		tag = `{victim.char.abilityName}!`
+	end
+
+	victim.hp = math.max(0, victim.hp - damage)
+	flash(victim)
+	floatText(victim, damage > 0 and `{tag}  -{damage}` or tag, Color3.fromRGB(255, 220, 60))
+	if attacker.char and attacker.char.lifesteal and damage > 0 then
+		attacker.hp = math.min(attacker.maxHp, attacker.hp + attacker.char.lifesteal)
+	end
+
+	if victim.hp <= 0 then
+		ffaEliminate(match, victim, attacker)
+	else
+		ffaSend(match, "ffa")
+	end
+end
+
+-- Launches a pizza in a straight horizontal line. It hits the first fighter it reaches, or splats on cover.
+local function ffaThrow(match, f, direction)
+	local now = os.clock()
+	if not f.alive or now < f.throwReadyAt or now < f.frozenUntil then
+		return
+	end
+	local root = getRoot(f)
+	if not root then
+		return
+	end
+	direction = Vector3.new(direction.X, 0, direction.Z)
+	if direction.Magnitude < 0.1 then
+		return
+	end
+	direction = direction.Unit
+	f.throwReadyAt = now + Config.FFAThrowCooldown
+
+	local origin = root.Position + Vector3.new(0, 1.5, 0) + direction * 2.5
+	local pizza = Instance.new("Part")
+	pizza.Name = "Pizza"
+	pizza.Shape = Enum.PartType.Cylinder
+	pizza.Size = Vector3.new(0.4, 3, 3)
+	pizza.Material = Enum.Material.SmoothPlastic
+	pizza.Color = Color3.fromRGB(240, 170, 60)
+	pizza.Anchored = true
+	pizza.CanCollide = false
+	pizza.CFrame = CFrame.new(origin) * CFrame.Angles(0, 0, math.pi / 2)
+	pizza.Parent = workspace
+
+	task.spawn(function()
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.FilterDescendantsInstances = { getCharacter(f), pizza }
+		local position, traveled, spin = origin, 0, 0
+		while match.running and traveled < Config.FFAProjectileRange do
+			local dt = RunService.Heartbeat:Wait()
+			local step = direction * Config.FFAProjectileSpeed * dt
+			local mid = position + step * 0.5
+			for _, v in match.fighters do
+				if v ~= f and v.alive then
+					local vr = getRoot(v)
+					if vr then
+						local d = vr.Position - mid
+						if Vector3.new(d.X, 0, d.Z).Magnitude < 3.2 and math.abs(d.Y) < 4 then
+							pizza:Destroy()
+							ffaHit(match, f, v)
+							return
+						end
+					end
+				end
+			end
+			if workspace:Raycast(position, step, params) then
+				break -- splatted against a pillar or wall
+			end
+			position += step
+			traveled += step.Magnitude
+			spin += dt * 14
+			pizza.CFrame = CFrame.new(position) * CFrame.Angles(0, spin, 0) * CFrame.Angles(0, 0, math.pi / 2)
+		end
+		pizza:Destroy()
+	end)
+end
+
+-- Dodge roll: for a moment every hit does zero damage. Then it has to recharge.
+local function ffaDodge(match, f)
+	local now = os.clock()
+	if not f.alive or now < f.dodgeReadyAt or now < f.frozenUntil then
+		return
+	end
+	f.dodgeReadyAt = now + Config.FFADodgeCooldown
+	f.rollingUntil = now + Config.FFADodgeSeconds
+	local character = getCharacter(f)
+	if character then
+		local glow = Instance.new("Highlight")
+		glow.Name = "RollGlow"
+		glow.FillColor = Color3.fromRGB(120, 200, 255)
+		glow.FillTransparency = 0.4
+		glow.OutlineColor = Color3.new(1, 1, 1)
+		glow.Parent = character
+		task.delay(Config.FFADodgeSeconds, function()
+			glow:Destroy()
+		end)
+	end
+	floatText(f, "ROLL!", Color3.fromRGB(120, 200, 255))
+end
+
+-- Active character abilities, adapted to real time. None of them can be dodged.
+local function ffaAbility(match, f)
+	if not f.alive or (f.activeLeft or 0) <= 0 or os.clock() < f.frozenUntil then
+		return
+	end
+	local id = f.activeId
+	if id == "CleaverSlash" then
+		local target = nearestEnemy(match, f, 35)
+		if not target then
+			notify(f, "No enemy within reach of the Cleaver!")
+			return
+		end
+		f.activeLeft -= 1
+		ffaSend(match, "ffa", `{f.name} swings the Cleaver!`)
+		task.spawn(function()
+			slashEffect(f, target)
+			if target.alive and match.running then
+				ffaEliminate(match, target, f)
+			end
+		end)
+	elseif id == "MeteorPie" then
+		local target = nearestEnemy(match, f, 80)
+		if not target then
+			notify(f, "No enemy in range for the Meteor Pie!")
+			return
+		end
+		f.activeLeft -= 1
+		ffaSend(match, "ffa", `{f.name} conjures a METEOR PIE!`)
+		task.spawn(function()
+			meteorEffect(target)
+			if target.alive and match.running then
+				target.hp = math.max(0, target.hp - Config.MeteorDamage)
+				flash(target)
+				floatText(target, `-{Config.MeteorDamage}`, Color3.fromRGB(255, 140, 40))
+				if target.hp <= 0 then
+					ffaEliminate(match, target, f)
+				else
+					ffaSend(match, "ffa")
+				end
+			end
+		end)
+	elseif id == "TimeFreeze" then
+		f.activeLeft -= 1
+		local frozen = {}
+		for _, v in match.fighters do
+			if v ~= f and v.alive then
+				v.frozenUntil = os.clock() + Config.FFAFreezeSeconds
+				local root = getRoot(v)
+				if root then
+					root.Anchored = true
+				end
+				freezeEffect(v)
+				table.insert(frozen, v)
+			end
+		end
+		ffaSend(match, "ffa", `{f.name} stops time!`)
+		task.delay(Config.FFAFreezeSeconds, function()
+			for _, v in frozen do
+				thaw(v)
+				local root = getRoot(v)
+				if root and v.alive then
+					root.Anchored = false
+				end
+			end
+		end)
+	end
+	ffaSend(match, "ffa")
+end
+
+-- Bots chase the nearest fighter, strafe, and throw with a little aim error.
+local function runBots(match)
+	while match.running do
+		local now = os.clock()
+		for _, bot in match.fighters do
+			if bot.isBot and bot.alive and now >= bot.frozenUntil then
+				local root = getRoot(bot)
+				local humanoid = bot.model:FindFirstChildOfClass("Humanoid")
+				local target = nearestEnemy(match, bot, 400)
+				local targetRoot = target and getRoot(target)
+				if root and humanoid and targetRoot then
+					local offset = Vector3.new(targetRoot.Position.X - root.Position.X, 0, targetRoot.Position.Z - root.Position.Z)
+					local distance = offset.Magnitude
+					if distance > 0.5 then
+						local toward = offset.Unit
+						if distance > 26 then
+							humanoid:MoveTo(root.Position + toward * 16)
+						elseif distance < 12 then
+							humanoid:MoveTo(root.Position - toward * 12)
+						else
+							local side = Vector3.new(-toward.Z, 0, toward.X) * (bot.strafeDir or 1)
+							humanoid:MoveTo(root.Position + side * 10)
+							if math.random() < 0.15 then
+								bot.strafeDir = -(bot.strafeDir or 1)
+							end
+						end
+						if now >= bot.throwReadyAt and distance < 70 then
+							local jitter = math.rad((math.random() * 2 - 1) * (bot.aimError or 8))
+							ffaThrow(match, bot, CFrame.Angles(0, jitter, 0):VectorToWorldSpace(toward))
+							bot.throwReadyAt = now + Config.FFAThrowCooldown * (1.4 + math.random())
+						end
+					end
+				end
+			end
+		end
+		task.wait(0.25)
+	end
+end
+
+-- Once a second: refresh the clock on every HUD, and apply regeneration (Mama Mia).
+local function runTicker(match)
+	local lastRegen = os.clock()
+	while match.running do
+		task.wait(1)
+		local now = os.clock()
+		if now - lastRegen >= 6 then
+			lastRegen = now
+			for _, f in match.fighters do
+				if f.alive and f.char and f.char.healPerTurn and f.hp < f.maxHp then
+					f.hp = math.min(f.maxHp, f.hp + f.char.healPerTurn)
+					floatText(f, `+{f.char.healPerTurn}`, Color3.fromRGB(120, 235, 140))
+				end
+			end
+		end
+		if match.running then
+			ffaSend(match, "ffa")
+		end
+	end
+end
+
+local function runFFA(arena, fighters)
+	local match = {
+		arena = arena,
+		ffa = true,
+		fighters = fighters,
+		running = true,
+		endsAt = os.clock() + 3 + Config.FFAMatchSeconds,
+		lastMessage = "Get ready!",
+	}
+	local points = arena.spawnPoints(#fighters)
+	for i, f in fighters do
+		f.alive = true
+		f.kills = 0
+		f.throwReadyAt = 0
+		f.dodgeReadyAt = 0
+		f.rollingUntil = 0
+		f.frozenUntil = 0
+		local root = getRoot(f)
+		if root then
+			getCharacter(f):PivotTo(points[i])
+			root.Anchored = true -- held in place for the countdown
+			if not f.isBot then
+				applyLook(f)
+				ffaPlayers[f.player] = { match = match, fighter = f }
+			end
+		end
+	end
+
+	for s = 3, 1, -1 do
+		ffaSend(match, "ffa_intro", `Free For All starts in {s}...`)
+		task.wait(1)
+	end
+	match.endsAt = os.clock() + Config.FFAMatchSeconds
+	for _, f in fighters do
+		local root = getRoot(f)
+		if root then
+			root.Anchored = false
+		end
+	end
+	ffaSend(match, "ffa", "FIGHT!")
+	task.spawn(runBots, match)
+	task.spawn(runTicker, match)
+
+	local winner
+	while true do
+		task.wait(0.2)
+		local alive, last = 0, nil
+		for _, f in fighters do
+			if f.alive and not f.isBot and f.player.Parent ~= Players then
+				f.alive = false -- a player who left is out
+				f.hp = 0
+			end
+			if f.alive then
+				alive += 1
+				last = f
+			end
+		end
+		if alive <= 1 then
+			winner = last
+			break
+		end
+		if os.clock() >= match.endsAt then
+			-- time is up: the most HP wins, kills break ties
+			for _, f in fighters do
+				if f.alive and (not winner or f.hp > winner.hp or (f.hp == winner.hp and f.kills > winner.kills)) then
+					winner = f
+				end
+			end
+			break
+		end
+	end
+	match.running = false
+
+	for _, f in fighters do
+		if not f.isBot then
+			local coins = (f == winner and Config.FFAWinCoins or Config.FFALossCoins) + f.kills * Config.FFAKillCoins
+			getProfile(f.player).coins += coins
+			sendProfile(f.player)
+		end
+	end
+	ffaSend(match, "ffa_over", winner and `{winner.name} wins the Free For All!` or "Nobody won.")
+	task.wait(Config.ResultSeconds)
+	for _, f in fighters do
+		if not f.isBot and f.player.Parent == Players then
+			f.player:LoadCharacter()
+		end
+	end
+end
+
+ffaThrowEvent.OnServerEvent:Connect(function(player, direction)
+	local entry = ffaPlayers[player]
+	if entry and entry.match.running and typeof(direction) == "Vector3" then
+		ffaThrow(entry.match, entry.fighter, direction)
+	end
+end)
+ffaDodgeEvent.OnServerEvent:Connect(function(player)
+	local entry = ffaPlayers[player]
+	if entry and entry.match.running then
+		ffaDodge(entry.match, entry.fighter)
+	end
+end)
+ffaAbilityEvent.OnServerEvent:Connect(function(player)
+	local entry = ffaPlayers[player]
+	if entry and entry.match.running then
+		ffaAbility(entry.match, entry.fighter)
+	end
+end)
+
 -- Waiting Area, arenas, bot kiosk and spectating -----------------------------
 
 local function inBox(cframe, size, position)
@@ -1135,7 +1645,17 @@ local function isInZone(position)
 	return math.abs(rel.X) <= zone.Size.X / 2 and math.abs(rel.Z) <= zone.Size.Z / 2 and rel.Y > -2 and rel.Y < 12
 end
 
--- Tracks who is in the Waiting Area (the queue) and which arena each player is watching.
+local ffaZone = map.ffaZone
+
+local function isInFFAZone(position)
+	local rel = ffaZone.CFrame:PointToObjectSpace(position)
+	return math.abs(rel.X) <= ffaZone.Size.X / 2
+		and math.abs(rel.Z) <= ffaZone.Size.Z / 2
+		and rel.Y > -2
+		and rel.Y < 12
+end
+
+-- Tracks who is in the Waiting Areas (the queues) and which arena each player is watching.
 task.spawn(function()
 	while true do
 		for _, p in Players:GetPlayers() do
@@ -1153,9 +1673,17 @@ task.spawn(function()
 				end
 			end
 
+			if position and isInFFAZone(position) then
+				inFFAZone[p] = true
+				ffaZoneSince[p] = ffaZoneSince[p] or os.clock()
+			else
+				inFFAZone[p] = nil
+				ffaZoneSince[p] = nil
+			end
+
 			local arena = fightingArena[p]
 			if not arena and position then
-				for _, a in arenas do
+				for _, a in viewAreas do
 					if inBox(a.regionCFrame, a.regionSize, position) then
 						arena = a
 						break
@@ -1178,6 +1706,7 @@ local function arenaStatus()
 	for _, a in arenas do
 		table.insert(list, { id = a.id, busy = a.busy == true, label = a.label })
 	end
+	table.insert(list, { id = ffaArena.id, busy = ffaArena.busy == true, label = ffaArena.label })
 	return list
 end
 
@@ -1190,6 +1719,12 @@ task.spawn(function()
 				allBusy = false
 			end
 		end
+		local ffaWaiting = 0
+		for _, q in Players:GetPlayers() do
+			if inFFAZone[q] and ready[q] then
+				ffaWaiting += 1
+			end
+		end
 		local status = arenaStatus()
 		for _, p in Players:GetPlayers() do
 			if not viewing[p] then
@@ -1197,6 +1732,14 @@ task.spawn(function()
 				local pending = pendingInfo[p]
 				if pending then
 					message = `Arena {pending.arena.id}: {pending.label} starts in {pending.seconds}...`
+				elseif ffaPending[p] then
+					message = `Free For All starts in {ffaPending[p]}...`
+				elseif inFFAZone[p] then
+					if ffaArena.busy then
+						message = "A Free For All is in progress. Hang on, or watch from the stands!"
+					else
+						message = `Free For All: {ffaWaiting} player(s) + {ffaBots} bot(s). It needs {Config.FFAMinPlayers} to start. Use the kiosk to add bots!`
+					end
 				elseif inZone[p] then
 					if allBusy then
 						message = "All arenas are busy. You're in the queue!"
@@ -1237,6 +1780,9 @@ travelEvent.OnServerEvent:Connect(function(player, where, arenaId)
 	end
 	if where == "stands" then
 		local arena = typeof(arenaId) == "number" and arenas[arenaId]
+		if arenaId == "FFA" then
+			arena = ffaArena
+		end
 		if arena then
 			character:PivotTo(arena.standsSpot())
 		end
@@ -1332,6 +1878,128 @@ local function startMatch(arena, a, b, levelId)
 		sendToViewers(arena, idleState(arena))
 	end)
 end
+
+-- Free For All matchmaking: its own waiting area and queue ----------------------
+
+-- The kiosk cycles the number of bots for the next Free For All: 0, 1, 2 ... max, then back to 0.
+map.ffaBotPrompt.Triggered:Connect(function(player)
+	if not inFFAZone[player] or ffaArena.busy then
+		return
+	end
+	ffaBots = (ffaBots + 1) % (Config.FFAMaxBots + 1)
+	charResultEvent:FireClient(player, {
+		message = `Free For All bots: {ffaBots} (the kiosk adds one each press and wraps to 0 after {Config.FFAMaxBots})`,
+	})
+end)
+
+local function getFFAQueue()
+	local list = {}
+	for _, p in Players:GetPlayers() do
+		if ready[p] and inFFAZone[p] and not reserved[p] then
+			table.insert(list, p)
+		end
+	end
+	table.sort(list, function(x, y)
+		return ffaZoneSince[x] < ffaZoneSince[y]
+	end)
+	return list
+end
+
+local function startFFA(queue)
+	local humans = {}
+	for i = 1, math.min(#queue, Config.FFAMaxPlayers) do
+		humans[i] = queue[i]
+	end
+	ffaArena.busy = true
+	ffaArena.label = `{#humans} player(s) + {math.min(ffaBots, Config.FFAMaxPlayers - #humans)} bot(s)`
+	for _, p in humans do
+		reserved[p] = true
+	end
+
+	task.spawn(function()
+		local cancelled = false
+		for s = Config.FFACountdown, 1, -1 do
+			-- anyone who walks out of the waiting area drops out; too few fighters cancels the start
+			local here = {}
+			for _, p in humans do
+				if p.Parent == Players and inFFAZone[p] then
+					table.insert(here, p)
+				else
+					reserved[p] = nil
+					ffaPending[p] = nil
+				end
+			end
+			humans = here
+			local bots = math.min(ffaBots, Config.FFAMaxPlayers - #humans)
+			if #humans < 1 or #humans + bots < Config.FFAMinPlayers then
+				cancelled = true
+				break
+			end
+			for _, p in humans do
+				ffaPending[p] = s
+			end
+			task.wait(1)
+		end
+		for _, p in humans do
+			ffaPending[p] = nil
+		end
+
+		if not cancelled and #humans >= 1 then
+			local fighters = {}
+			for _, p in humans do
+				table.insert(fighters, newFighter(p))
+				fightingArena[p] = ffaArena
+			end
+			local level = getBotLevel(Config.FFABotLevel) or Config.BotLevels[2]
+			for i = 1, math.min(ffaBots, Config.FFAMaxPlayers - #humans) do
+				local bot = makeBot(level)
+				bot.name = `PizzaBot {i}`
+				bot.userId = -100 - i
+				bot.aimError = level.aimError
+				table.insert(fighters, bot)
+			end
+
+			local ok, err = pcall(runFFA, ffaArena, fighters)
+			if not ok then
+				warn("Free For All error: " .. tostring(err))
+				for _, f in fighters do
+					if not f.isBot and f.player.Parent == Players then
+						f.player:LoadCharacter()
+					end
+				end
+			end
+			for _, f in fighters do
+				if f.isBot and f.model.Parent then
+					f.model:Destroy()
+				end
+				if not f.isBot then
+					ffaPlayers[f.player] = nil
+				end
+			end
+		end
+
+		for _, p in humans do
+			reserved[p] = nil
+			fightingArena[p] = nil
+		end
+		ffaBots = 0
+		ffaArena.busy = false
+		ffaArena.label = nil
+		sendToViewers(ffaArena, idleState(ffaArena))
+	end)
+end
+
+task.spawn(function()
+	while true do
+		task.wait(0.5)
+		if not ffaArena.busy then
+			local queue = getFFAQueue()
+			if #queue >= 1 and #queue + ffaBots >= Config.FFAMinPlayers then
+				startFFA(queue)
+			end
+		end
+	end
+end)
 
 while true do
 	local arena

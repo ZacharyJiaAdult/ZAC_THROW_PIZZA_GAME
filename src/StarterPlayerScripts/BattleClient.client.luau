@@ -23,6 +23,10 @@ local equipCharEvent = remotes:WaitForChild("EquipCharacter")
 local charResultEvent = remotes:WaitForChild("CharacterResult")
 local dodgeEvent = remotes:WaitForChild("Dodge")
 local adminEvent = remotes:WaitForChild("AdminGrant")
+local ffaThrowEvent = remotes:WaitForChild("FFAThrow")
+local ffaDodgeEvent = remotes:WaitForChild("FFADodge")
+local ffaAbilityEvent = remotes:WaitForChild("FFAAbility")
+local UserInputService = game:GetService("UserInputService")
 
 local function make(class, props, parent)
 	local inst = Instance.new(class)
@@ -920,6 +924,26 @@ local function refreshPicker()
 			watchButton.Text = "BACK TO LOBBY"
 		end)
 	end
+
+	local ffaInfo = arenaList.FFA
+	local ffaBusy = ffaInfo and ffaInfo.busy
+	local ffaButton = make("TextButton", {
+		LayoutOrder = 99,
+		Size = UDim2.new(1, 0, 0, 44),
+		BackgroundColor3 = ffaBusy and Color3.fromRGB(150, 80, 60) or Color3.fromRGB(110, 70, 160),
+		Font = Enum.Font.GothamBold,
+		TextSize = 16,
+		TextWrapped = true,
+		TextColor3 = Color3.new(1, 1, 1),
+		Text = ffaBusy and `Free For All: {ffaInfo.label}` or "Free For All: empty",
+	}, picker)
+	make("UICorner", { CornerRadius = UDim.new(0, 8) }, ffaButton)
+	ffaButton.Activated:Connect(function()
+		picker.Visible = false
+		travelEvent:FireServer("stands", "FFA")
+		watching = true
+		watchButton.Text = "BACK TO LOBBY"
+	end)
 end
 
 watchButton.Activated:Connect(function()
@@ -1000,6 +1024,195 @@ botMenuEvent.OnClientEvent:Connect(function()
 	botMenu.Visible = true
 end)
 
+-- Free For All (real time): roster, controls and keyboard / mouse input -------------------------
+
+local ffa = { active = false, alive = false, throwReady = 0, rollReady = 0 }
+
+local roster = make("Frame", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -20, 0, 100),
+	Size = UDim2.fromOffset(300, 0),
+	AutomaticSize = Enum.AutomaticSize.Y,
+	BackgroundTransparency = 1,
+	Visible = false,
+}, gui)
+make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 4) }, roster)
+
+local ffaControls = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -30),
+	Size = UDim2.fromOffset(660, 66),
+	BackgroundTransparency = 1,
+	Visible = false,
+}, gui)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder,
+	Padding = UDim.new(0, 10),
+}, ffaControls)
+
+local function controlButton(order, color)
+	local button = make("TextButton", {
+		LayoutOrder = order,
+		Size = UDim2.fromOffset(210, 62),
+		BackgroundColor3 = color,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 17,
+		TextWrapped = true,
+		TextColor3 = Color3.new(1, 1, 1),
+	}, ffaControls)
+	make("UICorner", { CornerRadius = UDim.new(0, 12) }, button)
+	return button
+end
+local ffaThrowButton = controlButton(1, Color3.fromRGB(240, 130, 40))
+local ffaRollButton = controlButton(2, Color3.fromRGB(60, 140, 235))
+local ffaAbilityButton = controlButton(3, Color3.fromRGB(190, 40, 40))
+ffaAbilityButton.Visible = false
+
+-- Where a throw goes: toward the mouse, or the camera direction on touch screens and for the buttons.
+local function aimDirection(useCamera)
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	if not root then
+		return nil
+	end
+	if not useCamera and not UserInputService.TouchEnabled then
+		local target = player:GetMouse().Hit.Position
+		local flat = Vector3.new(target.X - root.Position.X, 0, target.Z - root.Position.Z)
+		if flat.Magnitude > 2 then
+			return flat.Unit
+		end
+	end
+	local look = workspace.CurrentCamera.CFrame.LookVector
+	return Vector3.new(look.X, 0, look.Z)
+end
+
+local function ffaThrowNow(useCamera)
+	if not (ffa.active and ffa.alive) or os.clock() < ffa.throwReady then
+		return
+	end
+	local direction = aimDirection(useCamera)
+	if direction then
+		ffa.throwReady = os.clock() + Config.FFAThrowCooldown
+		ffaThrowEvent:FireServer(direction)
+	end
+end
+
+local function ffaRollNow()
+	if not (ffa.active and ffa.alive) or os.clock() < ffa.rollReady then
+		return
+	end
+	ffa.rollReady = os.clock() + Config.FFADodgeCooldown
+	ffaDodgeEvent:FireServer()
+end
+
+local function ffaAbilityNow()
+	if ffa.active and ffa.alive and myActive and myActive.left > 0 then
+		ffaAbilityEvent:FireServer()
+	end
+end
+
+ffaThrowButton.Activated:Connect(function()
+	ffaThrowNow(true)
+end)
+ffaRollButton.Activated:Connect(ffaRollNow)
+ffaAbilityButton.Activated:Connect(ffaAbilityNow)
+
+UserInputService.InputBegan:Connect(function(input, processed)
+	if processed or not ffa.active then
+		return
+	end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.KeyCode == Enum.KeyCode.E then
+		ffaThrowNow(false)
+	elseif input.KeyCode == Enum.KeyCode.Q then
+		ffaRollNow()
+	elseif input.KeyCode == Enum.KeyCode.R then
+		ffaAbilityNow()
+	end
+end)
+
+-- cooldown read-outs on the buttons
+task.spawn(function()
+	while true do
+		task.wait(0.1)
+		if ffaControls.Visible then
+			local now = os.clock()
+			local throwWait = math.max(0, ffa.throwReady - now)
+			local rollWait = math.max(0, ffa.rollReady - now)
+			ffaThrowButton.Text = throwWait > 0 and `THROW ({string.format("%.1f", throwWait)}s)` or "THROW\n[E or click]"
+			ffaRollButton.Text = rollWait > 0 and `ROLL ({string.format("%.1f", rollWait)}s)` or "ROLL = no damage\n[Q]"
+			if myActive then
+				ffaAbilityButton.Text = `{myActive.label} ({myActive.left})\n[R]`
+			end
+		end
+	end
+end)
+
+-- Called for every state: shows the Free For All roster and controls, hides them otherwise.
+local function updateFFA(state)
+	local isFFA = state.ffa == true
+	roster.Visible = isFFA
+	ffa.active = isFFA and state.phase == "ffa"
+	ffa.alive = false
+	if not isFFA then
+		ffaControls.Visible = false
+		return
+	end
+
+	for _, child in roster:GetChildren() do
+		if not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+	local sorted = table.clone(state.fighters)
+	table.sort(sorted, function(a, b)
+		if a.alive ~= b.alive then
+			return a.alive
+		end
+		return a.hp > b.hp
+	end)
+	for order, f in sorted do
+		local ratio = math.clamp(f.hp / f.maxHp, 0, 1)
+		local row = make("Frame", {
+			LayoutOrder = order,
+			Size = UDim2.new(1, 0, 0, 28),
+			BackgroundColor3 = Color3.fromRGB(30, 30, 30),
+			BackgroundTransparency = f.alive and 0.15 or 0.6,
+		}, roster)
+		make("UICorner", { CornerRadius = UDim.new(0, 6) }, row)
+		local fill = make("Frame", {
+			Size = UDim2.fromScale(ratio, 1),
+			BackgroundColor3 = Color3.fromHSV(0.33 * ratio, 0.75, 0.85),
+			BackgroundTransparency = f.alive and 0.2 or 0.7,
+		}, row)
+		make("UICorner", { CornerRadius = UDim.new(0, 6) }, fill)
+		make("TextLabel", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.GothamBold,
+			TextSize = 14,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			TextColor3 = f.userId == player.UserId and Color3.fromRGB(255, 220, 60) or Color3.new(1, 1, 1),
+			Text = `  {f.name}  {f.hp}/{f.maxHp}  kills {f.kills or 0}`,
+			ZIndex = 2,
+		}, row)
+		if f.userId == player.UserId then
+			ffa.alive = f.alive
+			if f.activeId then
+				myActive = { id = f.activeId, label = f.activeLabel or "ABILITY", left = f.activeLeft or 0 }
+			end
+		end
+	end
+
+	ffaControls.Visible = ffa.active and ffa.alive
+	ffaAbilityButton.Visible = myActive ~= nil and myActive.left > 0
+	if state.timeLeft then
+		roundLabel.Text = `{state.arenaName or "Free For All"} - {state.timeLeft}s`
+	end
+end
+
 local turnToken = 0
 
 throwButton.Activated:Connect(function()
@@ -1022,19 +1235,20 @@ stateEvent.OnClientEvent:Connect(function(state)
 		end
 	end
 
-	local prefix = state.arenaId and `Arena {state.arenaId} - ` or ""
+	local arenaTitle = state.arenaName or (state.arenaId and `Arena {state.arenaId}`)
+	local prefix = arenaTitle and `{arenaTitle} - ` or ""
 	if state.round and state.round > 0 then
 		roundLabel.Text = prefix
 			.. (state.round > state.maxRounds and "SUDDEN DEATH" or `Round {state.round} / {state.maxRounds}`)
-	elseif state.arenaId then
-		roundLabel.Text = `Arena {state.arenaId}`
+	elseif arenaTitle then
+		roundLabel.Text = arenaTitle
 	else
 		roundLabel.Text = "Pizza Battle"
 	end
 
 	myActive = nil
 	for i, bar in bars do
-		local fighter = state.fighters and state.fighters[i]
+		local fighter = (not state.ffa) and state.fighters and state.fighters[i] or nil -- the duel bars are not used in a Free For All
 		bar.bg.Visible = fighter ~= nil
 		if fighter then
 			local ratio = math.clamp(fighter.hp / fighter.maxHp, 0, 1)
@@ -1052,6 +1266,8 @@ stateEvent.OnClientEvent:Connect(function(state)
 			}):Play()
 		end
 	end
+
+	updateFFA(state)
 
 	local myTurn = state.phase == "turn" and state.turnUserId == player.UserId
 	throwButton.Visible = myTurn

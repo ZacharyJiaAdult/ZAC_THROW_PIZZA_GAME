@@ -7,6 +7,11 @@ local remotes = ReplicatedStorage:WaitForChild("BattleRemotes")
 local stateEvent = remotes:WaitForChild("State")
 local throwEvent = remotes:WaitForChild("Throw")
 local startEvent = remotes:WaitForChild("Start")
+local profileEvent = remotes:WaitForChild("Profile")
+local buyEvent = remotes:WaitForChild("BuyCrate")
+local equipEvent = remotes:WaitForChild("Equip")
+local crateEvent = remotes:WaitForChild("CrateResult")
+local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
 
 local function make(class, props, parent)
 	local inst = Instance.new(class)
@@ -151,12 +156,287 @@ startButton.Activated:Connect(function()
 	fade:Play()
 end)
 
+-- Coins, abilities and the crate shop ------------------------------------------------
+
+local profile = { coins = 0, armour = {}, abilities = {} }
+local armedAbility = nil
+
+local coinsLabel = make("TextLabel", {
+	AnchorPoint = Vector2.new(0.5, 0),
+	Position = UDim2.new(0.5, 0, 0, 48),
+	Size = UDim2.fromOffset(200, 24),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 20,
+	TextColor3 = Color3.fromRGB(255, 220, 60),
+	TextStrokeTransparency = 0.4,
+	Text = "Coins: 0",
+}, gui)
+
+local abilityRow = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 1),
+	Position = UDim2.new(0.5, 0, 1, -165),
+	Size = UDim2.fromOffset(800, 44),
+	BackgroundTransparency = 1,
+	Visible = false,
+}, gui)
+make("UIListLayout", {
+	FillDirection = Enum.FillDirection.Horizontal,
+	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	Padding = UDim.new(0, 8),
+}, abilityRow)
+
+local function refreshAbilities()
+	for _, child in abilityRow:GetChildren() do
+		if child:IsA("TextButton") then
+			child:Destroy()
+		end
+	end
+	if armedAbility and (profile.abilities[armedAbility] or 0) <= 0 then
+		armedAbility = nil
+	end
+	local ids = {}
+	for id, count in profile.abilities do
+		if count > 0 and Items.List[id] then
+			table.insert(ids, id)
+		end
+	end
+	table.sort(ids)
+	for _, id in ids do
+		local armed = armedAbility == id
+		local button = make("TextButton", {
+			Size = UDim2.fromOffset(190, 44),
+			BackgroundColor3 = armed and Color3.fromRGB(255, 200, 40) or Color3.fromRGB(50, 50, 60),
+			Font = Enum.Font.GothamBold,
+			TextSize = 16,
+			TextColor3 = armed and Color3.new(0, 0, 0) or Color3.new(1, 1, 1),
+			Text = `{Items.List[id].name} x{profile.abilities[id]}`,
+		}, abilityRow)
+		make("UICorner", { CornerRadius = UDim.new(0, 8) }, button)
+		button.Activated:Connect(function()
+			armedAbility = if armedAbility == id then nil else id
+			refreshAbilities()
+		end)
+	end
+end
+
+local shop = make("Frame", {
+	AnchorPoint = Vector2.new(0.5, 0.5),
+	Position = UDim2.fromScale(0.5, 0.5),
+	Size = UDim2.fromOffset(700, 440),
+	BackgroundColor3 = Color3.fromRGB(35, 30, 40),
+	Visible = false,
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 14) }, shop)
+make("UIStroke", { Color = Color3.fromRGB(240, 130, 40), Thickness = 3 }, shop)
+make("TextLabel", {
+	Size = UDim2.new(1, 0, 0, 50),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBlack,
+	TextSize = 30,
+	TextColor3 = Color3.fromRGB(255, 220, 60),
+	Text = "CRATE SHOP",
+}, shop)
+local closeButton = make("TextButton", {
+	AnchorPoint = Vector2.new(1, 0),
+	Position = UDim2.new(1, -10, 0, 10),
+	Size = UDim2.fromOffset(40, 40),
+	BackgroundColor3 = Color3.fromRGB(180, 50, 50),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 22,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "X",
+}, shop)
+make("UICorner", { CornerRadius = UDim.new(0, 8) }, closeButton)
+
+for i, crate in Items.Crates do
+	local card = make("Frame", {
+		Position = UDim2.fromOffset(20 + (i - 1) * 220, 60),
+		Size = UDim2.fromOffset(210, 145),
+		BackgroundColor3 = Color3.fromRGB(55, 48, 62),
+	}, shop)
+	make("UICorner", { CornerRadius = UDim.new(0, 10) }, card)
+	make("TextLabel", {
+		Position = UDim2.fromOffset(0, 10),
+		Size = UDim2.new(1, 0, 0, 30),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBlack,
+		TextSize = 24,
+		TextColor3 = crate.color,
+		Text = crate.name,
+	}, card)
+	make("TextLabel", {
+		Position = UDim2.fromOffset(0, 45),
+		Size = UDim2.new(1, 0, 0, 40),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.Gotham,
+		TextSize = 16,
+		TextColor3 = Color3.new(1, 1, 1),
+		TextWrapped = true,
+		Text = crate.blurb,
+	}, card)
+	local buy = make("TextButton", {
+		AnchorPoint = Vector2.new(0.5, 1),
+		Position = UDim2.new(0.5, 0, 1, -10),
+		Size = UDim2.fromOffset(180, 40),
+		BackgroundColor3 = Color3.fromRGB(240, 130, 40),
+		Font = Enum.Font.GothamBlack,
+		TextSize = 18,
+		TextColor3 = Color3.new(1, 1, 1),
+		Text = `Buy - {crate.price} coins`,
+	}, card)
+	make("UICorner", { CornerRadius = UDim.new(0, 8) }, buy)
+	buy.Activated:Connect(function()
+		buyEvent:FireServer(crate.id)
+	end)
+end
+
+local resultLabel = make("TextLabel", {
+	Position = UDim2.fromOffset(20, 215),
+	Size = UDim2.new(1, -40, 0, 30),
+	BackgroundTransparency = 1,
+	Font = Enum.Font.GothamBold,
+	TextSize = 20,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "Buy a crate to win armour and abilities!",
+}, shop)
+
+local inventory = make("Frame", {
+	Position = UDim2.fromOffset(20, 255),
+	Size = UDim2.new(1, -40, 1, -265),
+	BackgroundTransparency = 1,
+}, shop)
+make("UIListLayout", { Padding = UDim.new(0, 6) }, inventory)
+
+local function refreshShop()
+	coinsLabel.Text = `Coins: {profile.coins}`
+	for _, child in inventory:GetChildren() do
+		if not child:IsA("UIListLayout") then
+			child:Destroy()
+		end
+	end
+
+	local armourRow = make("Frame", { Size = UDim2.new(1, 0, 0, 44), BackgroundTransparency = 1 }, inventory)
+	make("UIListLayout", {
+		FillDirection = Enum.FillDirection.Horizontal,
+		VerticalAlignment = Enum.VerticalAlignment.Center,
+		Padding = UDim.new(0, 6),
+	}, armourRow)
+	make("TextLabel", {
+		Size = UDim2.fromOffset(70, 40),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		TextSize = 16,
+		TextColor3 = Color3.new(1, 1, 1),
+		Text = "Armour:",
+	}, armourRow)
+	local armourIds = {}
+	for id in profile.armour do
+		table.insert(armourIds, id)
+	end
+	table.sort(armourIds)
+	if #armourIds == 0 then
+		make("TextLabel", {
+			Size = UDim2.fromOffset(200, 40),
+			BackgroundTransparency = 1,
+			Font = Enum.Font.Gotham,
+			TextSize = 16,
+			TextColor3 = Color3.fromRGB(170, 170, 170),
+			Text = "none yet",
+		}, armourRow)
+	end
+	for _, id in armourIds do
+		local item = Items.List[id]
+		local equipped = profile.equipped == id
+		local button = make("TextButton", {
+			Size = UDim2.fromOffset(140, 40),
+			BackgroundColor3 = equipped and Color3.fromRGB(70, 130, 70) or Color3.fromRGB(55, 48, 62),
+			Font = Enum.Font.GothamBold,
+			TextSize = 13,
+			TextWrapped = true,
+			TextColor3 = Items.RarityColors[item.rarity],
+			Text = `{equipped and "[ON] " or ""}{item.name} (-{item.reduction})`,
+		}, armourRow)
+		make("UICorner", { CornerRadius = UDim.new(0, 8) }, button)
+		button.Activated:Connect(function()
+			equipEvent:FireServer(id)
+		end)
+	end
+
+	local abilityIds = {}
+	for id, count in profile.abilities do
+		if count > 0 and Items.List[id] then
+			table.insert(abilityIds, id)
+		end
+	end
+	table.sort(abilityIds)
+	local parts = {}
+	for _, id in abilityIds do
+		table.insert(parts, `{Items.List[id].name} x{profile.abilities[id]}`)
+	end
+	make("TextLabel", {
+		Size = UDim2.new(1, 0, 0, 50),
+		BackgroundTransparency = 1,
+		Font = Enum.Font.GothamBold,
+		TextSize = 16,
+		TextColor3 = Color3.new(1, 1, 1),
+		TextWrapped = true,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Text = "Abilities (arm one on your turn): " .. (#parts > 0 and table.concat(parts, ", ") or "none yet"),
+	}, inventory)
+end
+
+local shopButton = make("TextButton", {
+	AnchorPoint = Vector2.new(0, 1),
+	Position = UDim2.new(0, 20, 1, -20),
+	Size = UDim2.fromOffset(130, 50),
+	BackgroundColor3 = Color3.fromRGB(70, 130, 220),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 22,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "SHOP",
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 12) }, shopButton)
+
+shopButton.Activated:Connect(function()
+	shop.Visible = not shop.Visible
+	refreshShop()
+end)
+closeButton.Activated:Connect(function()
+	shop.Visible = false
+end)
+
+profileEvent.OnClientEvent:Connect(function(data)
+	profile = data
+	refreshShop()
+	refreshAbilities()
+end)
+
+crateEvent.OnClientEvent:Connect(function(result)
+	if result.error then
+		resultLabel.Text = result.error
+		resultLabel.TextColor3 = Color3.fromRGB(255, 90, 90)
+		return
+	end
+	local item = Items.List[result.itemId]
+	local text = `You got {item.name} ({item.rarity})!`
+	if result.refund then
+		text ..= ` Duplicate: {result.refund} coins back.`
+	end
+	resultLabel.Text = text
+	resultLabel.TextColor3 = Items.RarityColors[item.rarity]
+end)
+
 local turnToken = 0
 
 throwButton.Activated:Connect(function()
 	turnToken += 1
 	throwButton.Visible = false
-	throwEvent:FireServer()
+	abilityRow.Visible = false
+	throwEvent:FireServer(armedAbility)
+	armedAbility = nil
+	refreshAbilities()
 end)
 
 stateEvent.OnClientEvent:Connect(function(state)
@@ -186,6 +466,11 @@ stateEvent.OnClientEvent:Connect(function(state)
 
 	local myTurn = state.phase == "turn" and state.turnUserId == player.UserId
 	throwButton.Visible = myTurn
+	abilityRow.Visible = myTurn
+	if not myTurn then
+		armedAbility = nil
+	end
+	refreshAbilities()
 	if myTurn then
 		local token = turnToken
 		task.spawn(function()

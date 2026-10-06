@@ -3,6 +3,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage:WaitForChild("BattleConfig"))
+local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
 
 local remotes = Instance.new("Folder")
 remotes.Name = "BattleRemotes"
@@ -15,15 +16,110 @@ throwEvent.Parent = remotes
 local startEvent = Instance.new("RemoteEvent")
 startEvent.Name = "Start"
 startEvent.Parent = remotes
+local profileEvent = Instance.new("RemoteEvent")
+profileEvent.Name = "Profile"
+profileEvent.Parent = remotes
+local buyEvent = Instance.new("RemoteEvent")
+buyEvent.Name = "BuyCrate"
+buyEvent.Parent = remotes
+local equipEvent = Instance.new("RemoteEvent")
+equipEvent.Name = "Equip"
+equipEvent.Parent = remotes
+local crateEvent = Instance.new("RemoteEvent")
+crateEvent.Name = "CrateResult"
+crateEvent.Parent = remotes
 remotes.Parent = ReplicatedStorage
 
 -- Players only join the match queue after pressing START on the title screen.
 local ready = {}
+
+-- Shop profiles live in memory only (no saving yet).
+local profiles = {}
+
+local function getProfile(player)
+	local profile = profiles[player]
+	if not profile then
+		profile = { coins = Config.StartingCoins, armour = {}, abilities = {} }
+		profiles[player] = profile
+	end
+	return profile
+end
+
+local function sendProfile(player)
+	if player.Parent == Players then
+		profileEvent:FireClient(player, getProfile(player))
+	end
+end
+
 startEvent.OnServerEvent:Connect(function(player)
 	ready[player] = true
+	sendProfile(player)
 end)
 Players.PlayerRemoving:Connect(function(player)
 	ready[player] = nil
+	profiles[player] = nil
+end)
+
+local function rollCrate(crate)
+	local total = 0
+	for _, weight in crate.weights do
+		total += weight
+	end
+	local pick = math.random() * total
+	local rarity = "Common"
+	for _, name in Items.Rarities do
+		pick -= crate.weights[name]
+		if pick <= 0 then
+			rarity = name
+			break
+		end
+	end
+	local pool = {}
+	for id, item in Items.List do
+		if item.rarity == rarity then
+			table.insert(pool, id)
+		end
+	end
+	table.sort(pool)
+	return pool[math.random(#pool)]
+end
+
+buyEvent.OnServerEvent:Connect(function(player, crateId)
+	local crate = typeof(crateId) == "string" and Items.getCrate(crateId)
+	if not crate then
+		return
+	end
+	local profile = getProfile(player)
+	if profile.coins < crate.price then
+		crateEvent:FireClient(player, { error = "Not enough coins!" })
+		return
+	end
+	profile.coins -= crate.price
+
+	local itemId = rollCrate(crate)
+	local item = Items.List[itemId]
+	local refund
+	if item.kind == "armour" then
+		if profile.armour[itemId] then
+			refund = Items.DuplicateRefund
+			profile.coins += refund
+		else
+			profile.armour[itemId] = true
+			profile.equipped = profile.equipped or itemId
+		end
+	else
+		profile.abilities[itemId] = (profile.abilities[itemId] or 0) + 1
+	end
+	crateEvent:FireClient(player, { itemId = itemId, refund = refund })
+	sendProfile(player)
+end)
+
+equipEvent.OnServerEvent:Connect(function(player, itemId)
+	local profile = getProfile(player)
+	if typeof(itemId) == "string" and profile.armour[itemId] then
+		profile.equipped = itemId
+		sendProfile(player)
+	end
 end)
 
 local ARENA_CENTER = Vector3.new(0, 300, 0)
@@ -72,14 +168,20 @@ end
 -- Fighters (a real player or the practice bot) -------------------------------
 
 local function newFighter(player)
-	return { player = player, name = player.DisplayName, userId = player.UserId, hp = Config.StartingHealth }
+	return {
+		player = player,
+		name = player.DisplayName,
+		userId = player.UserId,
+		hp = Config.StartingHealth,
+		armour = Items.armourReduction(getProfile(player).equipped),
+	}
 end
 
 local function makeBot()
 	local model = Players:CreateHumanoidModelFromDescription(Instance.new("HumanoidDescription"), Enum.HumanoidRigType.R15)
 	model.Name = "PizzaBot"
 	model.Parent = workspace
-	return { isBot = true, model = model, name = "PizzaBot", userId = -1, hp = Config.StartingHealth }
+	return { isBot = true, model = model, name = "PizzaBot", userId = -1, hp = Config.StartingHealth, armour = 0 }
 end
 
 local function getCharacter(f)
@@ -146,9 +248,13 @@ local function waitForThrow(f)
 	end
 	local player = f.player
 	local thrown = false
-	local conn = throwEvent.OnServerEvent:Connect(function(sender)
+	local chosen -- the ability the player armed, if any (validated by the match loop)
+	local conn = throwEvent.OnServerEvent:Connect(function(sender, abilityId)
 		if sender == player then
 			thrown = true
+			if typeof(abilityId) == "string" then
+				chosen = abilityId
+			end
 		end
 	end)
 	local started = os.clock()
@@ -156,9 +262,10 @@ local function waitForThrow(f)
 		task.wait(0.1)
 	end
 	conn:Disconnect()
+	return chosen
 end
 
-local function rollDice(f)
+local function rollDice(f, ability)
 	local root = getRoot(f)
 	local base = (root and root.Position or ARENA_CENTER) + Vector3.new(0, 6, 0)
 
@@ -189,6 +296,11 @@ local function rollDice(f)
 	label.Parent = gui
 
 	local roll = math.random(1, Config.DieSides)
+	if ability == "DoubleDice" then
+		roll = math.max(roll, math.random(1, Config.DieSides))
+	elseif ability == "LuckyPepperoni" then
+		roll = math.max(roll, Items.LuckyMin)
+	end
 	local started = os.clock()
 	while os.clock() - started < Config.RollSeconds do
 		label.Text = tostring(math.random(1, Config.DieSides))
@@ -264,18 +376,48 @@ local function runMatch(a, b)
 			end
 
 			send("turn", match, `{f.name}: throw the pizza!`, f.userId)
-			waitForThrow(f)
+			local ability = waitForThrow(f)
+
+			-- Only spend an ability the player actually owns.
+			local abilityItem
+			if ability then
+				local profile = getProfile(f.player)
+				local item = Items.List[ability]
+				if item and item.kind == "ability" and (profile.abilities[ability] or 0) > 0 then
+					profile.abilities[ability] -= 1
+					sendProfile(f.player)
+					abilityItem = item
+				else
+					ability = nil
+				end
+			end
+
+			if abilityItem then
+				if ability == "HealingSlice" then
+					f.hp = math.min(Config.StartingHealth, f.hp + Items.HealAmount)
+				end
+				send("rolling", match, `{f.name} uses {abilityItem.name}!`)
+				task.wait(1.2)
+			end
 
 			send("rolling", match, `{f.name} rolls the d{Config.DieSides}...`)
-			local roll, die = rollDice(f)
+			local roll, die = rollDice(f, ability)
 			send("rolling", match, `{f.name} rolled a {roll}!`)
 			task.wait(0.6)
 			die:Destroy()
 
+			local damage = roll
+			if ability == "ExtraCheese" then
+				damage += Items.CheeseBonus
+			end
+			local blocked = math.min(foe.armour, damage - 1) -- a hit always does at least 1
+			damage -= blocked
+
 			throwPizza(f, foe)
-			foe.hp = math.max(0, foe.hp - roll)
+			foe.hp = math.max(0, foe.hp - damage)
 			flash(foe)
-			send("hit", match, `{f.name} hits {foe.name} for {roll} damage!`)
+			local note = blocked > 0 and ` ({blocked} blocked by armour)` or ""
+			send("hit", match, `{f.name} hits {foe.name} for {damage} damage!{note}`)
 			task.wait(1.2)
 
 			if foe.hp <= 0 then
@@ -293,6 +435,14 @@ local function runMatch(a, b)
 				send("hit", match, "Tied! Sudden death!")
 				task.wait(2)
 			end
+		end
+	end
+
+	for _, f in fighters do
+		if not f.isBot then
+			local profile = getProfile(f.player)
+			profile.coins += f == winner and Config.WinCoins or Config.LossCoins
+			sendProfile(f.player)
 		end
 	end
 

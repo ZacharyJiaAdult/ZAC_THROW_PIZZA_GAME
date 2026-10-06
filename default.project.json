@@ -4,7 +4,8 @@
     "$className": "DataModel",
     "ReplicatedStorage": {
       "$className": "ReplicatedStorage",
-      "BattleConfig": { "$path": "src/ReplicatedStorage/BattleConfig.luau" }
+      "BattleConfig": { "$path": "src/ReplicatedStorage/BattleConfig.luau" },
+      "BattleItems": { "$path": "src/ReplicatedStorage/BattleItems.luau" }
     },
     "ServerScriptService": {
       "$className": "ServerScriptService",

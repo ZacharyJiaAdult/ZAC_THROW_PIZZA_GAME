@@ -1,0 +1,21 @@
+{
+  "name": "my-game",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "BattleConfig": { "$path": "src/ReplicatedStorage/BattleConfig.luau" }
+    },
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "BattleServer": { "$path": "src/ServerScriptService/BattleServer.server.luau" }
+    },
+    "StarterPlayer": {
+      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "$className": "StarterPlayerScripts",
+        "BattleClient": { "$path": "src/StarterPlayerScripts/BattleClient.client.luau" }
+      }
+    }
+  }
+}

@@ -43,7 +43,7 @@ end)
 local function send(phase, match, message, turnUserId)
 	local fighters = {}
 	for _, f in match.fighters do
-		table.insert(fighters, { userId = f.player.UserId, name = f.player.DisplayName, hp = f.hp })
+		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp })
 	end
 	broadcast({
 		phase = phase,
@@ -57,31 +57,52 @@ local function send(phase, match, message, turnUserId)
 	})
 end
 
--- Fighters -------------------------------------------------------------------
+-- Fighters (a real player or the practice bot) -------------------------------
 
-local function getRoot(player)
-	local character = player.Character
+local function newFighter(player)
+	return { player = player, name = player.DisplayName, userId = player.UserId, hp = Config.StartingHealth }
+end
+
+local function makeBot()
+	local model = Players:CreateHumanoidModelFromDescription(Instance.new("HumanoidDescription"), Enum.HumanoidRigType.R15)
+	model.Name = "PizzaBot"
+	model.Parent = workspace
+	return { isBot = true, model = model, name = "PizzaBot", userId = -1, hp = Config.StartingHealth }
+end
+
+local function getCharacter(f)
+	if f.isBot then
+		return f.model
+	end
+	return f.player.Character
+end
+
+local function getRoot(f)
+	local character = getCharacter(f)
 	return character and character:FindFirstChild("HumanoidRootPart")
 end
 
 local function isReady(f)
-	return f.player.Parent == Players and getRoot(f.player) ~= nil
+	if not f.isBot and f.player.Parent ~= Players then
+		return false
+	end
+	return getRoot(f) ~= nil
 end
 
 local function placeFighter(f, side)
-	local root = getRoot(f.player)
+	local root = getRoot(f)
 	if not root then
 		return false
 	end
 	local pos = ARENA_CENTER + Vector3.new(side * PAD_OFFSET, 4, 0)
 	local lookAt = ARENA_CENTER + Vector3.new(-side * PAD_OFFSET, 4, 0)
-	f.player.Character:PivotTo(CFrame.lookAt(pos, lookAt))
+	getCharacter(f):PivotTo(CFrame.lookAt(pos, lookAt))
 	root.Anchored = true
 	return true
 end
 
-local function flash(player)
-	local character = player.Character
+local function flash(f)
+	local character = getCharacter(f)
 	if not character then
 		return
 	end
@@ -94,9 +115,9 @@ local function flash(player)
 	end)
 end
 
-local function knockOut(player)
-	local character = player.Character
-	local root = getRoot(player)
+local function knockOut(f)
+	local character = getCharacter(f)
+	local root = getRoot(f)
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if root and humanoid then
 		root.Anchored = false
@@ -106,7 +127,12 @@ end
 
 -- Turn actions ---------------------------------------------------------------
 
-local function waitForThrow(player)
+local function waitForThrow(f)
+	if f.isBot then
+		task.wait(1.5) -- the bot "thinks" for a moment, then throws
+		return
+	end
+	local player = f.player
 	local thrown = false
 	local conn = throwEvent.OnServerEvent:Connect(function(sender)
 		if sender == player then
@@ -121,7 +147,7 @@ local function waitForThrow(player)
 end
 
 local function rollDice(f)
-	local root = getRoot(f.player)
+	local root = getRoot(f)
 	local base = (root and root.Position or ARENA_CENTER) + Vector3.new(0, 6, 0)
 
 	local die = Instance.new("Part")
@@ -162,13 +188,13 @@ local function rollDice(f)
 	return roll, die
 end
 
-local function throwPizza(fromPlayer, toPlayer)
-	local fromRoot, toRoot = getRoot(fromPlayer), getRoot(toPlayer)
+local function throwPizza(from, to)
+	local fromRoot, toRoot = getRoot(from), getRoot(to)
 	if not fromRoot or not toRoot then
 		return
 	end
-	local from = fromRoot.Position + Vector3.new(0, 2, 0)
-	local to = toRoot.Position + Vector3.new(0, 1, 0)
+	local startPos = fromRoot.Position + Vector3.new(0, 2, 0)
+	local endPos = toRoot.Position + Vector3.new(0, 1, 0)
 
 	local pizza = Instance.new("Part")
 	pizza.Name = "Pizza"
@@ -187,7 +213,7 @@ local function throwPizza(fromPlayer, toPlayer)
 		if alpha >= 1 then
 			break
 		end
-		local pos = from:Lerp(to, alpha) + Vector3.new(0, math.sin(alpha * math.pi) * 6, 0)
+		local pos = startPos:Lerp(endPos, alpha) + Vector3.new(0, math.sin(alpha * math.pi) * 6, 0)
 		pizza.CFrame = CFrame.new(pos) * CFrame.Angles(0, alpha * math.pi * 8, 0) * CFrame.Angles(0, 0, math.pi / 2)
 		RunService.Heartbeat:Wait()
 	end
@@ -197,20 +223,19 @@ end
 -- Match ----------------------------------------------------------------------
 
 local function runMatch(a, b)
-	local match = {
-		round = 0,
-		fighters = {
-			{ player = a, hp = Config.StartingHealth },
-			{ player = b, hp = Config.StartingHealth },
-		},
-	}
+	local match = { round = 0, fighters = { a, b } }
 	local fighters = match.fighters
 
-	if not (placeFighter(fighters[1], -1) and placeFighter(fighters[2], 1)) then
+	if not (placeFighter(a, -1) and placeFighter(b, 1)) then
+		for _, f in fighters do
+			if f.isBot then
+				f.model:Destroy()
+			end
+		end
 		return
 	end
 
-	send("intro", match, `{a.DisplayName} vs {b.DisplayName}!`)
+	send("intro", match, `{a.name} vs {b.name}!`)
 	task.wait(3)
 
 	local winner, reason
@@ -225,34 +250,33 @@ local function runMatch(a, b)
 				winner, reason = f, "by forfeit"
 				break
 			end
-			local name, foeName = f.player.DisplayName, foe.player.DisplayName
 
-			send("turn", match, `{name}: throw the pizza!`, f.player.UserId)
-			waitForThrow(f.player)
+			send("turn", match, `{f.name}: throw the pizza!`, f.userId)
+			waitForThrow(f)
 
-			send("rolling", match, `{name} rolls the d{Config.DieSides}...`)
+			send("rolling", match, `{f.name} rolls the d{Config.DieSides}...`)
 			local roll, die = rollDice(f)
-			send("rolling", match, `{name} rolled a {roll}!`)
+			send("rolling", match, `{f.name} rolled a {roll}!`)
 			task.wait(0.6)
 			die:Destroy()
 
-			throwPizza(f.player, foe.player)
+			throwPizza(f, foe)
 			foe.hp = math.max(0, foe.hp - roll)
-			flash(foe.player)
-			send("hit", match, `{name} hits {foeName} for {roll} damage!`)
+			flash(foe)
+			send("hit", match, `{f.name} hits {foe.name} for {roll} damage!`)
 			task.wait(1.2)
 
 			if foe.hp <= 0 then
-				knockOut(foe.player)
+				knockOut(foe)
 				winner, reason = f, "by knockout"
 				break
 			end
 		end
 
 		if not winner and match.round >= Config.MaxRounds then
-			local hpA, hpB = fighters[1].hp, fighters[2].hp
+			local hpA, hpB = a.hp, b.hp
 			if hpA ~= hpB then
-				winner, reason = hpA > hpB and fighters[1] or fighters[2], `after {Config.MaxRounds} rounds`
+				winner, reason = hpA > hpB and a or b, `after {Config.MaxRounds} rounds`
 			else
 				send("hit", match, "Tied! Sudden death!")
 				task.wait(2)
@@ -260,11 +284,13 @@ local function runMatch(a, b)
 		end
 	end
 
-	send("over", match, `{winner.player.DisplayName} wins {reason}!`)
+	send("over", match, `{winner.name} wins {reason}!`)
 	task.wait(Config.ResultSeconds)
 
 	for _, f in fighters do
-		if f.player.Parent == Players then
+		if f.isBot then
+			f.model:Destroy()
+		elseif f.player.Parent == Players then
 			f.player:LoadCharacter()
 		end
 	end
@@ -274,8 +300,9 @@ end
 
 while true do
 	local queue = Players:GetPlayers()
-	if #queue < Config.MinPlayers then
-		broadcast({ phase = "lobby", message = `Waiting for players ({#queue}/{Config.MinPlayers})...` })
+	local needed = Config.BotEnabled and 1 or Config.MinPlayers
+	if #queue < needed then
+		broadcast({ phase = "lobby", message = `Waiting for players ({#queue}/{needed})...` })
 		task.wait(1)
 	else
 		for i = #queue, 2, -1 do
@@ -286,8 +313,12 @@ while true do
 			broadcast({ phase = "lobby", message = `Match starts in {s}...` })
 			task.wait(1)
 		end
-		if #Players:GetPlayers() >= Config.MinPlayers and queue[1].Parent and queue[2].Parent then
-			runMatch(queue[1], queue[2])
+		local p1, p2 = queue[1], queue[2]
+		if p1.Parent == Players and (not p2 or p2.Parent == Players) then
+			-- With one player in the server, the practice bot fills the second slot.
+			local fighterA = newFighter(p1)
+			local fighterB = p2 and newFighter(p2) or makeBot()
+			runMatch(fighterA, fighterB)
 		end
 	end
 end

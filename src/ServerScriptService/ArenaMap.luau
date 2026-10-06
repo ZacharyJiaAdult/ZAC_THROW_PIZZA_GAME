@@ -3,7 +3,11 @@
 --   spawn (0, 0, 0)  ->  Waiting Area (z -60..-30)  ->  a row of arenas along z = -130, spaced 100 studs apart
 local ArenaMap = {}
 
+local Scenery = require(script.Parent:WaitForChild("Scenery"))
+
 local ARENA_Z = -130
+-- the duel arenas sit at different depths, so they do not form a straight row
+local ARENA_ZS = { -135, -168, -122 }
 local ARENA_SPACING = 100
 
 local function part(parent, props)
@@ -47,18 +51,140 @@ local function addSignText(board, face, title, subtitle)
 	end
 end
 
--- One arena: floor, fighter pads, glass walls, two stands and a name board.
-local function buildArena(map, id, center)
+-- Props that make each duel arena different. They sit near the walls, clear of the fighter pads.
+local function ovenProps(map, id, center)
+	for _, c in { { -27, -11 }, { 27, -11 }, { -27, 11 }, { 27, 11 } } do
+		part(map, {
+			Name = `Arena{id}Oven`,
+			Size = Vector3.new(4, 11, 4),
+			Position = center + Vector3.new(c[1], 6.5, c[2]),
+			Material = Enum.Material.Brick,
+			Color = Color3.fromRGB(140, 60, 40),
+		})
+		part(map, {
+			Name = `Arena{id}OvenGlow`,
+			Size = Vector3.new(2.4, 2.2, 0.4),
+			Position = center + Vector3.new(c[1], 3.4, c[2] + (c[2] < 0 and 2.1 or -2.1)),
+			Material = Enum.Material.Neon,
+			Color = Color3.fromRGB(255, 140, 40),
+			CanCollide = false,
+		})
+	end
+end
+
+local function sauceProps(map, id, center)
+	local rng = Random.new(id * 131)
+	for i = 1, 6 do
+		local height = rng:NextNumber(4, 5.5)
+		local x = (i % 2 == 0 and 1 or -1) * rng:NextNumber(24, 28)
+		part(map, {
+			Name = `Arena{id}Barrel`,
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(height, 3.6, 3.6),
+			CFrame = CFrame.new(center + Vector3.new(x, 1 + height / 2, rng:NextNumber(-12, 12)))
+				* CFrame.Angles(0, 0, math.pi / 2),
+			Material = Enum.Material.Wood,
+			Color = Color3.fromRGB(110 + rng:NextInteger(0, 30), 70 + rng:NextInteger(0, 20), 40),
+		})
+	end
+	for _ = 1, 4 do
+		local d = rng:NextNumber(5, 9)
+		part(map, {
+			Name = `Arena{id}Puddle`,
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(0.15, d, d),
+			CFrame = CFrame.new(center + Vector3.new(rng:NextNumber(-9, 9), 1.08, rng:NextNumber(-10, 10)))
+				* CFrame.Angles(0, 0, math.pi / 2),
+			Material = Enum.Material.Neon,
+			Color = if rng:NextInteger(1, 2) == 1 then Color3.fromRGB(90, 220, 90) else Color3.fromRGB(235, 70, 60),
+			Transparency = 0.25,
+			CanCollide = false,
+		})
+	end
+end
+
+local function cheeseProps(map, id, center)
+	local rng = Random.new(id * 211)
+	for _, c in { { -26, -11, 0 }, { 26, -11, 90 }, { -26, 11, 270 }, { 26, 11, 180 } } do
+		local wedge = Instance.new("WedgePart")
+		wedge.Name = `Arena{id}CheeseWedge`
+		wedge.Anchored = true
+		wedge.Size = Vector3.new(6, 5, 6)
+		wedge.CFrame = CFrame.new(center + Vector3.new(c[1], 3.5, c[2])) * CFrame.Angles(0, math.rad(c[3]), 0)
+		wedge.Material = Enum.Material.SmoothPlastic
+		wedge.Color = Color3.fromRGB(250, 210, 70)
+		wedge.Parent = map
+	end
+	for _ = 1, 9 do
+		local d = rng:NextNumber(2.5, 5)
+		part(map, {
+			Name = `Arena{id}CheeseHole`,
+			Shape = Enum.PartType.Cylinder,
+			Size = Vector3.new(0.12, d, d),
+			CFrame = CFrame.new(center + Vector3.new(rng:NextNumber(-10, 10), 1.07, rng:NextNumber(-11, 11)))
+				* CFrame.Angles(0, 0, math.pi / 2),
+			Material = Enum.Material.SmoothPlastic,
+			Color = Color3.fromRGB(190, 150, 40),
+			CanCollide = false,
+		})
+	end
+end
+
+-- Each duel arena has its own materials, colours, size and props.
+local THEMES = {
+	{ -- Pizzeria: red slate floor, brick ovens, four stand tiers
+		floorMaterial = Enum.Material.Slate,
+		floor = Color3.fromRGB(190, 70, 55),
+		padLeft = Color3.fromRGB(70, 130, 220),
+		padRight = Color3.fromRGB(240, 130, 40),
+		standMaterial = Enum.Material.Concrete,
+		standLight = Color3.fromRGB(120, 120, 130),
+		standDark = Color3.fromRGB(90, 90, 100),
+		wall = Color3.fromRGB(180, 220, 255),
+		tiers = 4,
+		standWidth = 70,
+		props = ovenProps,
+	},
+	{ -- Sauce Pit: dark green basalt, wooden barrels and sauce puddles, three narrower tiers
+		floorMaterial = Enum.Material.Basalt,
+		floor = Color3.fromRGB(62, 98, 62),
+		padLeft = Color3.fromRGB(240, 240, 100),
+		padRight = Color3.fromRGB(230, 80, 200),
+		standMaterial = Enum.Material.WoodPlanks,
+		standLight = Color3.fromRGB(115, 88, 60),
+		standDark = Color3.fromRGB(88, 66, 46),
+		wall = Color3.fromRGB(170, 255, 200),
+		tiers = 3,
+		standWidth = 62,
+		props = sauceProps,
+	},
+	{ -- Cheese Dome: sandstone, cheese wedges and holes, five wide tiers
+		floorMaterial = Enum.Material.Sandstone,
+		floor = Color3.fromRGB(232, 196, 84),
+		padLeft = Color3.fromRGB(60, 200, 200),
+		padRight = Color3.fromRGB(230, 90, 60),
+		standMaterial = Enum.Material.Sandstone,
+		standLight = Color3.fromRGB(205, 175, 95),
+		standDark = Color3.fromRGB(175, 145, 72),
+		wall = Color3.fromRGB(255, 240, 170),
+		tiers = 5,
+		standWidth = 76,
+		props = cheeseProps,
+	},
+}
+
+-- One arena: floor, fighter pads, glass walls, two stands and a name board, all styled by its theme.
+local function buildArena(map, id, center, theme)
 	local cx, cz = center.X, center.Z
 
 	part(map, {
 		Name = `Arena{id}Floor`,
 		Size = Vector3.new(60, 2, 30),
 		Position = center,
-		Material = Enum.Material.Slate,
-		Color = Color3.fromRGB(190, 70, 55),
+		Material = theme.floorMaterial,
+		Color = theme.floor,
 	})
-	for side, color in { [-1] = Color3.fromRGB(70, 130, 220), [1] = Color3.fromRGB(240, 130, 40) } do
+	for side, color in { [-1] = theme.padLeft, [1] = theme.padRight } do
 		part(map, {
 			Name = `Arena{id}Pad`,
 			Size = Vector3.new(10, 0.2, 10),
@@ -76,7 +202,7 @@ local function buildArena(map, id, center)
 			Size = size,
 			Position = position,
 			Material = Enum.Material.SmoothPlastic,
-			Color = Color3.fromRGB(180, 220, 255),
+			Color = theme.wall,
 			Transparency = 0.85,
 		})
 	end
@@ -85,22 +211,22 @@ local function buildArena(map, id, center)
 	wall("GlassWest", Vector3.new(1, 14, 33), Vector3.new(cx - 31, 9, cz))
 	wall("GlassEast", Vector3.new(1, 14, 33), Vector3.new(cx + 31, 9, cz))
 
-	-- Spectator stands on both long sides, four rising tiers each
-	for tier = 1, 4 do
+	-- Spectator stands on both long sides: the tier count and width differ per arena
+	for tier = 1, theme.tiers do
 		local height = tier * 2
-		local color = if tier % 2 == 0 then Color3.fromRGB(120, 120, 130) else Color3.fromRGB(90, 90, 100)
+		local color = if tier % 2 == 0 then theme.standLight else theme.standDark
 		part(map, {
 			Name = `Arena{id}StandSouth`,
-			Size = Vector3.new(70, height, 3),
+			Size = Vector3.new(theme.standWidth, height, 3),
 			Position = Vector3.new(cx, height / 2, cz + 18 + (tier - 1) * 3),
-			Material = Enum.Material.Concrete,
+			Material = theme.standMaterial,
 			Color = color,
 		})
 		part(map, {
 			Name = `Arena{id}StandNorth`,
-			Size = Vector3.new(70, height, 3),
+			Size = Vector3.new(theme.standWidth, height, 3),
 			Position = Vector3.new(cx, height / 2, cz - 18 - (tier - 1) * 3),
-			Material = Enum.Material.Concrete,
+			Material = theme.standMaterial,
 			Color = color,
 		})
 	end
@@ -123,6 +249,10 @@ local function buildArena(map, id, center)
 		Color = Color3.fromRGB(40, 30, 35),
 	})
 	addSignText(board, Enum.NormalId.Back, `ARENA {id}`, nil)
+
+	if theme.props then
+		theme.props(map, id, center)
+	end
 end
 
 -- Free For All: a big open arena with cover pillars, glass walls and stands on both long sides.
@@ -282,18 +412,19 @@ function ArenaMap.build(count)
 	local arenas = {}
 	for id = 1, count do
 		local cx = (id - (count + 1) / 2) * ARENA_SPACING
-		local center = Vector3.new(cx, 1, ARENA_Z)
-		buildArena(map, id, center)
+		local cz = ARENA_ZS[(id - 1) % #ARENA_ZS + 1]
+		local center = Vector3.new(cx, 1, cz)
+		buildArena(map, id, center, THEMES[(id - 1) % #THEMES + 1])
 		arenas[id] = {
 			id = id,
 			center = center,
 			-- anyone inside this box (the stands and the arena) is watching this arena
-			regionCFrame = CFrame.new(cx, 10, ARENA_Z),
+			regionCFrame = CFrame.new(cx, 10, cz),
 			regionSize = Vector3.new(80, 40, 72),
 			-- a random seat in the south stand (third tier), facing the arena
 			standsSpot = function()
-				local pos = Vector3.new(cx + math.random(-25, 25), 9.5, ARENA_Z + 24)
-				return CFrame.lookAt(pos, Vector3.new(cx, pos.Y, ARENA_Z))
+				local pos = Vector3.new(cx + math.random(-25, 25), 9.5, cz + 24)
+				return CFrame.lookAt(pos, Vector3.new(cx, pos.Y, cz))
 			end,
 		}
 	end
@@ -466,6 +597,34 @@ function ArenaMap.build(count)
 			return CFrame.lookAt(pos, Vector3.new(FFA_ARENA_X, pos.Y, ARENA_Z))
 		end,
 	}
+
+	-- Scenery: ground, winding paths, lamps, trees, rocks, hills. Kept clear of every play area.
+	local function at(x, z)
+		return Vector3.new(x, 0, z)
+	end
+	local exclusions = {
+		{ x = 0, z = 0, hx = 14, hz = 14 }, -- spawn
+		{ x = 0, z = -45, hx = 38, hz = 24 }, -- Waiting Area
+		{ x = FFA_WAITING_X, z = -45, hx = 38, hz = 24 }, -- Free For All waiting area
+		{ x = 44, z = -62, hx = 18, hz = 6 }, -- the pointer sign
+		{ x = ffaCenter.X, z = ffaCenter.Z, hx = 62, hz = 72 }, -- Free For All arena and stands
+	}
+	for _, arena in arenas do
+		table.insert(exclusions, { x = arena.center.X, z = arena.center.Z, hx = 52, hz = 52 })
+	end
+	local paths = {
+		{ at(0, -8), at(3, -14), at(-2, -20), at(0, -24) }, -- spawn to the Waiting Area
+		{ at(-31, -52), at(-37, -68), at(-18, -82), at(0, -86) }, -- Waiting Area (west side) to the hub
+		{ at(31, -52), at(37, -68), at(18, -82), at(0, -86) }, -- Waiting Area (east side) to the hub
+		{ at(31, -38), at(62, -30), at(92, -50), at(119, -42) }, -- to the Free For All waiting area
+		{ at(181, -52), at(205, -62), at(232, -66), at(250, -70) }, -- Free For All waiting area to its arena
+	}
+	for _, arena in arenas do
+		local entry = at(arena.center.X, arena.center.Z + 36)
+		local bend = at(arena.center.X * 0.45 + 7, (-86 + entry.Z) / 2 - 6)
+		table.insert(paths, { at(0, -86), bend, entry }) -- hub to each duel arena
+	end
+	Scenery.build(map, exclusions, paths)
 
 	local spawnLocation = workspace:FindFirstChildWhichIsA("SpawnLocation")
 

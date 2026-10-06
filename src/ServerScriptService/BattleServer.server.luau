@@ -4,6 +4,7 @@ local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 local DataStoreService = game:GetService("DataStoreService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local TextChatService = game:GetService("TextChatService")
 
 local Config = require(ReplicatedStorage:WaitForChild("BattleConfig"))
 local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
@@ -37,6 +38,8 @@ local adminEvent = makeRemote("AdminGrant")
 local ffaThrowEvent = makeRemote("FFAThrow")
 local ffaDodgeEvent = makeRemote("FFADodge")
 local ffaAbilityEvent = makeRemote("FFAAbility")
+local ffaNukeEvent = makeRemote("FFANuke")
+local nukeFlashEvent = makeRemote("NukeFlash")
 remotes.Parent = ReplicatedStorage
 
 local PAD_OFFSET = 18
@@ -321,7 +324,7 @@ local function rollCrate(crate)
 	end
 	local pool = {}
 	for id, item in Items.List do
-		if item.rarity == rarity then
+		if item.rarity == rarity and not item.notInCrates then
 			table.insert(pool, id)
 		end
 	end
@@ -807,6 +810,69 @@ end
 
 -- Match ----------------------------------------------------------------------
 
+-- The Nuclear Bomb: everyone watching the arena gets a white flash...
+local function nukeFlash(arena)
+	for _, p in Players:GetPlayers() do
+		if viewing[p] == arena then
+			nukeFlashEvent:FireClient(p)
+		end
+	end
+end
+
+-- ...and a fireball, a shockwave ring and a mushroom cloud rise over the arena floor.
+local function nukeEffect(position)
+	local base = Vector3.new(position.X, 2, position.Z)
+	local upright = CFrame.Angles(0, 0, math.pi / 2) -- cylinders lie along X; stand them up
+	local function glow(shape, size, cframe, color)
+		local p = Instance.new("Part")
+		p.Shape = shape
+		p.Size = size
+		p.CFrame = cframe
+		p.Material = Enum.Material.Neon
+		p.Color = color
+		p.Anchored = true
+		p.CanCollide = false
+		p.CanQuery = false
+		p.CastShadow = false
+		p.Parent = workspace
+		return p
+	end
+	local blast = glow(Enum.PartType.Ball, Vector3.one * 6, CFrame.new(base + Vector3.new(0, 3, 0)), Color3.fromRGB(255, 240, 190))
+	local ring = glow(Enum.PartType.Cylinder, Vector3.new(0.6, 8, 8), CFrame.new(base + Vector3.new(0, 1, 0)) * upright, Color3.fromRGB(255, 200, 120))
+	local stem = glow(Enum.PartType.Cylinder, Vector3.new(2, 6, 6), CFrame.new(base + Vector3.new(0, 1, 0)) * upright, Color3.fromRGB(255, 150, 60))
+	local cap = glow(Enum.PartType.Ball, Vector3.one * 4, CFrame.new(base + Vector3.new(0, 3, 0)), Color3.fromRGB(255, 120, 40))
+
+	-- a blast for the look only: no pressure and no broken joints
+	local boom = Instance.new("Explosion")
+	boom.Position = base
+	boom.BlastRadius = 20
+	boom.BlastPressure = 0
+	boom.DestroyJointRadiusPercent = 0
+	boom.ExplosionType = Enum.ExplosionType.NoCraters
+	boom.Parent = workspace
+
+	local quick = TweenInfo.new(1.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	local slow = TweenInfo.new(2.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(blast, quick, { Size = Vector3.one * 130, Transparency = 1 }):Play()
+	TweenService:Create(ring, quick, { Size = Vector3.new(0.6, 240, 240), Transparency = 1 }):Play()
+	TweenService:Create(stem, slow, {
+		Size = Vector3.new(50, 15, 15),
+		CFrame = CFrame.new(base + Vector3.new(0, 26, 0)) * upright,
+	}):Play()
+	TweenService:Create(cap, slow, {
+		Size = Vector3.one * 50,
+		CFrame = CFrame.new(base + Vector3.new(0, 56, 0)),
+		Color = Color3.fromRGB(120, 50, 20),
+		Transparency = 0.35,
+	}):Play()
+	task.delay(5.5, function()
+		for _, p in { blast, ring, stem, cap } do
+			p:Destroy()
+		end
+	end)
+	task.wait(1.2)
+end
+
 -- Sauce Sorcerer's Meteor Pie: a flaming pizza falls from the sky onto the target.
 local function meteorEffect(to)
 	local root = getRoot(to)
@@ -1050,6 +1116,19 @@ local function runMatch(arena, a, b)
 				end
 				send("rolling", match, `{f.name} uses {abilityItem.name}!`)
 				task.wait(1.2)
+
+				-- Nuclear Bomb: cannot be dodged or blocked, and ends the match
+				if ability == "NuclearBomb" then
+					nukeFlash(arena)
+					nukeEffect(arena.center)
+					foe.hp = 0
+					flash(foe)
+					send("hit", match, `{f.name} drops a NUCLEAR BOMB! {foe.name} is wiped out!`)
+					task.wait(1.2)
+					knockOut(foe)
+					winner, reason = f, "with a Nuclear Bomb"
+					break
+				end
 			end
 
 			send("rolling", match, `{f.name} rolls the d{Config.DieSides}...`)
@@ -1614,6 +1693,36 @@ local function runFFA(arena, fighters)
 	end
 end
 
+-- Nuclear Bomb in a Free For All: everyone else in the arena is eliminated.
+local function ffaNuke(match, f)
+	if f.isBot or not f.alive or os.clock() < f.frozenUntil then
+		return
+	end
+	local profile = getProfile(f.player)
+	if (profile.abilities.NuclearBomb or 0) <= 0 then
+		return
+	end
+	profile.abilities.NuclearBomb -= 1
+	sendProfile(f.player)
+	ffaSend(match, "ffa", `{f.name} launches a NUCLEAR BOMB!`)
+	nukeFlash(match.arena)
+	task.spawn(function()
+		nukeEffect(match.arena.center)
+		for _, v in match.fighters do
+			if v ~= f and v.alive and match.running then
+				ffaEliminate(match, v, f)
+			end
+		end
+	end)
+end
+
+ffaNukeEvent.OnServerEvent:Connect(function(player)
+	local entry = ffaPlayers[player]
+	if entry and entry.match.running then
+		ffaNuke(entry.match, entry.fighter)
+	end
+end)
+
 ffaThrowEvent.OnServerEvent:Connect(function(player, direction)
 	local entry = ffaPlayers[player]
 	if entry and entry.match.running and typeof(direction) == "Vector3" then
@@ -1877,6 +1986,124 @@ local function startMatch(arena, a, b, levelId)
 		arena.label = nil
 		sendToViewers(arena, idleState(arena))
 	end)
+end
+
+-- Admin chat commands ---------------------------------------------------------
+--   /coins <amount> [player|me|all]   give (or take, with a negative number) coins
+--   /nuke [player|me|all] [count]     give Nuclear Bombs
+--   /commands                         list these
+-- A player is matched by the start of their name or display name. Only admins can use them.
+
+local function tell(player, text, isError)
+	charResultEvent:FireClient(player, if isError then { error = text } else { message = text })
+end
+
+local function findTargets(admin, text)
+	text = (text or "me"):lower()
+	if text == "me" then
+		return { admin }
+	elseif text == "all" then
+		return Players:GetPlayers()
+	end
+	local found = {}
+	for _, p in Players:GetPlayers() do
+		if p.Name:lower():sub(1, #text) == text or p.DisplayName:lower():sub(1, #text) == text then
+			table.insert(found, p)
+		end
+	end
+	return found
+end
+
+local function describe(targets)
+	return #targets == 1 and targets[1].DisplayName or `{#targets} players`
+end
+
+local function runCommand(admin, name, args)
+	if not isAdmin(admin) then
+		tell(admin, "Only admins can use that command.", true)
+		return
+	end
+	if name == "coins" then
+		local amount = math.floor(tonumber(args[1] or "") or 0)
+		if amount == 0 or math.abs(amount) > 1000000 then
+			tell(admin, "Usage: /coins <amount> [player|me|all]", true)
+			return
+		end
+		local targets = findTargets(admin, args[2])
+		if #targets == 0 then
+			tell(admin, `No player matches "{args[2]}".`, true)
+			return
+		end
+		for _, p in targets do
+			local profile = getProfile(p)
+			profile.coins = math.max(0, profile.coins + amount)
+			sendProfile(p)
+			task.spawn(saveProfile, p)
+			if p ~= admin then
+				tell(p, `An admin gave you {amount} coins!`)
+			end
+		end
+		tell(admin, `Gave {amount} coins to {describe(targets)}.`)
+	elseif name == "nuke" then
+		local count = math.clamp(math.floor(tonumber(args[2] or "1") or 1), 1, 99)
+		local targets = findTargets(admin, args[1])
+		if #targets == 0 then
+			tell(admin, `No player matches "{args[1]}".`, true)
+			return
+		end
+		for _, p in targets do
+			local profile = getProfile(p)
+			profile.abilities.NuclearBomb = (profile.abilities.NuclearBomb or 0) + count
+			sendProfile(p)
+			task.spawn(saveProfile, p)
+			if p ~= admin then
+				tell(p, `An admin gave you {count} Nuclear Bomb(s)! Arm it on your turn, or press T in a Free For All.`)
+			end
+		end
+		tell(admin, `Gave {count} Nuclear Bomb(s) to {describe(targets)}.`)
+	elseif name == "commands" then
+		tell(admin, "/coins <amount> [player|me|all]   /nuke [player|me|all] [count]")
+	end
+end
+
+local COMMANDS = { "coins", "nuke", "commands" }
+
+local function handleChat(player, message)
+	local words = {}
+	for word in message:gmatch("%S+") do
+		table.insert(words, word)
+	end
+	local name = words[1] and words[1]:lower():match("^/(%a+)$")
+	if name and table.find(COMMANDS, name) then
+		table.remove(words, 1)
+		runCommand(player, name, words)
+	end
+end
+
+if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+	for _, name in COMMANDS do
+		local command = Instance.new("TextChatCommand")
+		command.Name = `PizzaCommand_{name}`
+		command.PrimaryAlias = `/{name}`
+		command.Parent = TextChatService
+		command.Triggered:Connect(function(source, text)
+			local player = Players:GetPlayerByUserId(source.UserId)
+			if player then
+				handleChat(player, text)
+			end
+		end)
+	end
+else
+	-- legacy chat
+	local function watch(player)
+		player.Chatted:Connect(function(message)
+			handleChat(player, message)
+		end)
+	end
+	Players.PlayerAdded:Connect(watch)
+	for _, player in Players:GetPlayers() do
+		watch(player)
+	end
 end
 
 -- Free For All matchmaking: its own waiting area and queue ----------------------

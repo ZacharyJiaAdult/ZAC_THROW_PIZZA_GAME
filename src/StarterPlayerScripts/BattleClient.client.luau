@@ -26,6 +26,8 @@ local adminEvent = remotes:WaitForChild("AdminGrant")
 local ffaThrowEvent = remotes:WaitForChild("FFAThrow")
 local ffaDodgeEvent = remotes:WaitForChild("FFADodge")
 local ffaAbilityEvent = remotes:WaitForChild("FFAAbility")
+local ffaNukeEvent = remotes:WaitForChild("FFANuke")
+local nukeFlashEvent = remotes:WaitForChild("NukeFlash")
 local UserInputService = game:GetService("UserInputService")
 
 local function make(class, props, parent)
@@ -1026,6 +1028,22 @@ end)
 
 -- Free For All (real time): roster, controls and keyboard / mouse input -------------------------
 
+-- Nuclear Bomb: the screen flashes white, then clears
+local nukeFlashFrame = make("Frame", {
+	Size = UDim2.fromScale(1, 1),
+	BackgroundColor3 = Color3.new(1, 1, 1),
+	BackgroundTransparency = 1,
+	BorderSizePixel = 0,
+	Active = false,
+	ZIndex = 50,
+}, gui)
+nukeFlashEvent.OnClientEvent:Connect(function()
+	nukeFlashFrame.BackgroundTransparency = 0
+	TweenService:Create(nukeFlashFrame, TweenInfo.new(2.5, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+		BackgroundTransparency = 1,
+	}):Play()
+end)
+
 local ffa = { active = false, alive = false, throwReady = 0, rollReady = 0 }
 
 local roster = make("Frame", {
@@ -1041,7 +1059,7 @@ make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.ne
 local ffaControls = make("Frame", {
 	AnchorPoint = Vector2.new(0.5, 1),
 	Position = UDim2.new(0.5, 0, 1, -30),
-	Size = UDim2.fromOffset(660, 66),
+	Size = UDim2.fromOffset(900, 66),
 	BackgroundTransparency = 1,
 	Visible = false,
 }, gui)
@@ -1069,6 +1087,8 @@ local ffaThrowButton = controlButton(1, Color3.fromRGB(240, 130, 40))
 local ffaRollButton = controlButton(2, Color3.fromRGB(60, 140, 235))
 local ffaAbilityButton = controlButton(3, Color3.fromRGB(190, 40, 40))
 ffaAbilityButton.Visible = false
+local ffaNukeButton = controlButton(4, Color3.fromRGB(110, 20, 20))
+ffaNukeButton.Visible = false
 
 -- Where a throw goes: toward the mouse, or the camera direction on touch screens and for the buttons.
 local function aimDirection(useCamera)
@@ -1117,7 +1137,14 @@ ffaThrowButton.Activated:Connect(function()
 	ffaThrowNow(true)
 end)
 ffaRollButton.Activated:Connect(ffaRollNow)
+local function ffaNukeNow()
+	if ffa.active and ffa.alive and (profile.abilities.NuclearBomb or 0) > 0 then
+		ffaNukeEvent:FireServer()
+	end
+end
+
 ffaAbilityButton.Activated:Connect(ffaAbilityNow)
+ffaNukeButton.Activated:Connect(ffaNukeNow)
 
 UserInputService.InputBegan:Connect(function(input, processed)
 	if processed or not ffa.active then
@@ -1129,6 +1156,8 @@ UserInputService.InputBegan:Connect(function(input, processed)
 		ffaRollNow()
 	elseif input.KeyCode == Enum.KeyCode.R then
 		ffaAbilityNow()
+	elseif input.KeyCode == Enum.KeyCode.T then
+		ffaNukeNow()
 	end
 end)
 
@@ -1145,6 +1174,9 @@ task.spawn(function()
 			if myActive then
 				ffaAbilityButton.Text = `{myActive.label} ({myActive.left})\n[R]`
 			end
+			local nukes = profile.abilities.NuclearBomb or 0
+			ffaNukeButton.Visible = nukes > 0
+			ffaNukeButton.Text = `NUCLEAR BOMB ({nukes})\n[T]`
 		end
 	end
 end)

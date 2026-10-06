@@ -25,6 +25,14 @@ Items.List = {
 	LuckyPepperoni = { name = "Lucky Pepperoni", kind = "ability", rarity = "Common", desc = "The die can't roll below 10" },
 	DoubleDice = { name = "Double Dice", kind = "ability", rarity = "Rare", desc = "Roll two d20 and keep the higher" },
 	HealingSlice = { name = "Healing Slice", kind = "ability", rarity = "Epic", desc = "Heal 15 HP, then throw" },
+	-- never in a crate: only an admin can hand it out (/nuke). Wipes out the opponent, or everyone in a Free For All.
+	NuclearBomb = {
+		name = "Nuclear Bomb",
+		kind = "ability",
+		rarity = "Epic",
+		notInCrates = true,
+		desc = "Wipes out your opponent (everyone else in a Free For All)",
+	},
 }
 
 -- weights are relative odds of each rarity

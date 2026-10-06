@@ -220,6 +220,72 @@ function ArenaMap.build(count)
 	prompt.RequiresLineOfSight = false
 	prompt.Parent = kiosk
 
+	-- Administrator Trophy: a golden cup on a pedestal. Only the owner can claim it (the server checks).
+	local pedestal = part(map, {
+		Name = "TrophyPedestal",
+		Size = Vector3.new(6, 3, 6),
+		Position = Vector3.new(-22, 2.5, -45),
+		Material = Enum.Material.Marble,
+		Color = Color3.fromRGB(40, 35, 45),
+	})
+	local gold = { Material = Enum.Material.Metal, Color = Color3.fromRGB(255, 200, 50), CanCollide = false }
+	local function goldPart(name, shape, size, cframe)
+		return part(map, {
+			Name = name,
+			Shape = shape,
+			Size = size,
+			CFrame = cframe,
+			Material = gold.Material,
+			Color = gold.Color,
+			CanCollide = gold.CanCollide,
+		})
+	end
+	local upright = CFrame.Angles(0, 0, math.pi / 2) -- cylinders lie along X; stand them up
+	goldPart("TrophyBase", Enum.PartType.Block, Vector3.new(3.4, 0.6, 3.4), CFrame.new(-22, 4.3, -45))
+	goldPart("TrophyStem", Enum.PartType.Cylinder, Vector3.new(3, 0.9, 0.9), CFrame.new(-22, 6.1, -45) * upright)
+	local bowl = goldPart("TrophyBowl", Enum.PartType.Cylinder, Vector3.new(3.6, 4.2, 4.2), CFrame.new(-22, 9.4, -45) * upright)
+	goldPart("TrophyHandleL", Enum.PartType.Ball, Vector3.new(1.8, 1.8, 1.8), CFrame.new(-24.4, 9.6, -45))
+	goldPart("TrophyHandleR", Enum.PartType.Ball, Vector3.new(1.8, 1.8, 1.8), CFrame.new(-19.6, 9.6, -45))
+	goldPart("TrophyStar", Enum.PartType.Ball, Vector3.new(1.6, 1.6, 1.6), CFrame.new(-22, 11.9, -45))
+	local glow = Instance.new("PointLight")
+	glow.Color = Color3.fromRGB(255, 210, 90)
+	glow.Brightness = 2
+	glow.Range = 22
+	glow.Parent = bowl
+
+	local trophyGui = Instance.new("BillboardGui")
+	trophyGui.Size = UDim2.fromOffset(260, 70)
+	trophyGui.StudsOffset = Vector3.new(0, 7.5, 0)
+	trophyGui.AlwaysOnTop = true
+	trophyGui.Parent = pedestal
+	local trophyTitle = Instance.new("TextLabel")
+	trophyTitle.Size = UDim2.fromScale(1, 0.62)
+	trophyTitle.BackgroundTransparency = 1
+	trophyTitle.Font = Enum.Font.GothamBlack
+	trophyTitle.TextScaled = true
+	trophyTitle.TextColor3 = Color3.fromRGB(255, 215, 80)
+	trophyTitle.TextStrokeTransparency = 0
+	trophyTitle.Text = "ADMINISTRATOR TROPHY"
+	trophyTitle.Parent = trophyGui
+	local trophyNote = Instance.new("TextLabel")
+	trophyNote.Position = UDim2.fromScale(0, 0.62)
+	trophyNote.Size = UDim2.fromScale(1, 0.38)
+	trophyNote.BackgroundTransparency = 1
+	trophyNote.Font = Enum.Font.GothamBold
+	trophyNote.TextScaled = true
+	trophyNote.TextColor3 = Color3.fromRGB(255, 110, 110)
+	trophyNote.TextStrokeTransparency = 0
+	trophyNote.Text = "Owner only"
+	trophyNote.Parent = trophyGui
+
+	local trophyPrompt = Instance.new("ProximityPrompt")
+	trophyPrompt.ActionText = "Claim"
+	trophyPrompt.ObjectText = "Administrator Trophy (owner only)"
+	trophyPrompt.HoldDuration = 1.5
+	trophyPrompt.MaxActivationDistance = 10
+	trophyPrompt.RequiresLineOfSight = false
+	trophyPrompt.Parent = pedestal
+
 	local spawnLocation = workspace:FindFirstChildWhichIsA("SpawnLocation")
 
 	return {
@@ -227,6 +293,7 @@ function ArenaMap.build(count)
 		arenas = arenas,
 		zone = zone,
 		botPrompt = prompt,
+		trophyPrompt = trophyPrompt,
 		lobbySpot = function()
 			if spawnLocation then
 				return spawnLocation.CFrame + Vector3.new(0, 4, 0)

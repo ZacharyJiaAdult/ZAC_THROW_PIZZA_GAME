@@ -90,6 +90,16 @@ end
 -- The place owner (when the place belongs to a user) is always an admin.
 local ADMIN_USER_IDS = { 11769949215 } -- @bottleo_waer
 
+-- The owner (the account that owns the place) alone can claim the Administrator Trophy.
+local OWNER_USER_IDS = { 11769949215 } -- @bottleo_waer
+
+local function isOwner(player)
+	if table.find(OWNER_USER_IDS, player.UserId) then
+		return true
+	end
+	return game.CreatorType == Enum.CreatorType.User and game.CreatorId == player.UserId
+end
+
 local function isAdmin(player)
 	if table.find(ADMIN_USER_IDS, player.UserId) then
 		return true
@@ -117,7 +127,14 @@ local function addAdminTitle(character)
 	label.Font = Enum.Font.GothamBlack
 	label.TextScaled = true
 	label.TextColor3 = Color3.fromRGB(255, 215, 80)
-	label.Text = "ADMIN"
+	-- whoever has claimed the Administrator Trophy wears the longer title
+	local holder = Players:GetPlayerFromCharacter(character)
+	local trophy = holder and profiles[holder] and profiles[holder].trophy
+	label.Text = trophy and "ADMINISTRATOR" or "ADMIN"
+	if trophy then
+		tag.Size = UDim2.fromOffset(210, 30)
+		label.TextColor3 = Color3.fromRGB(255, 240, 160)
+	end
 	label.Parent = tag
 
 	local corner = Instance.new("UICorner")
@@ -138,6 +155,18 @@ local function trackAdminTitle(player)
 	end
 	player.CharacterAdded:Connect(addAdminTitle)
 end
+local function refreshAdminTitle(player)
+	local character = player.Character
+	local head = character and character:FindFirstChild("Head")
+	local old = head and head:FindFirstChild("AdminTitle")
+	if old then
+		old:Destroy()
+	end
+	if character and isAdmin(player) then
+		task.spawn(addAdminTitle, character)
+	end
+end
+
 Players.PlayerAdded:Connect(trackAdminTitle)
 for _, player in Players:GetPlayers() do
 	task.spawn(trackAdminTitle, player)
@@ -169,6 +198,7 @@ local function saveProfile(player)
 			characters = profile.characters,
 			character = profile.character,
 			receipts = profile.receipts,
+			trophy = profile.trophy,
 		})
 	end)
 	if not ok then
@@ -201,6 +231,10 @@ local function loadProfile(player)
 				profile.character = Characters.Default
 			end
 			profile.receipts = data.receipts or profile.receipts
+			profile.trophy = data.trophy
+			if profile.trophy then
+				task.spawn(refreshAdminTitle, player)
+			end
 		end
 	else
 		profile.noSave = true
@@ -361,35 +395,63 @@ equipCharEvent.OnServerEvent:Connect(function(player, charId)
 end)
 
 -- Admin grant: an admin gives or takes the Head Chef for any player in the server.
-adminEvent.OnServerEvent:Connect(function(admin, targetUserId, grant)
+adminEvent.OnServerEvent:Connect(function(admin, targetUserId, grant, charId)
 	if not isAdmin(admin) or typeof(targetUserId) ~= "number" or typeof(grant) ~= "boolean" then
 		return
 	end
+	-- only characters that are not for sale (coinsLocked) can be handed out this way
+	local granted = typeof(charId) == "string" and Characters.ById[charId]
+	if not granted or not granted.coinsLocked then
+		return
+	end
 	local target = Players:GetPlayerByUserId(targetUserId)
-	local headChef = Characters.ById.HeadChef
 	if not target then
 		charResultEvent:FireClient(admin, { error = "That player is no longer in the server." })
 		return
 	end
 	local profile = getProfile(target)
 	if grant then
-		profile.characters[headChef.id] = true
+		profile.characters[granted.id] = true
 	else
-		profile.characters[headChef.id] = nil
-		if profile.character == headChef.id then
+		profile.characters[granted.id] = nil
+		if profile.character == granted.id then
 			profile.character = Characters.Default
 		end
 	end
 	sendProfile(target)
 	task.spawn(saveProfile, target)
 	charResultEvent:FireClient(admin, {
-		message = `{grant and "Gave" or "Took"} the Head Chef {grant and "to" or "from"} {target.DisplayName}.`,
+		message = `{grant and "Gave" or "Took"} {granted.name} {grant and "to" or "from"} {target.DisplayName}.`,
 	})
 	if target ~= admin then
 		charResultEvent:FireClient(target, {
-			message = grant and "An admin gave you the Head Chef!" or "An admin removed the Head Chef.",
+			message = grant and `An admin gave you {granted.name}!` or `An admin removed {granted.name}.`,
 		})
 	end
+end)
+
+-- Administrator Trophy: only the owner can claim it. It unlocks every character that is not for sale
+-- and upgrades the owner's title to ADMINISTRATOR.
+map.trophyPrompt.Triggered:Connect(function(player)
+	if not isOwner(player) then
+		charResultEvent:FireClient(player, { error = "Only the owner can claim the Administrator Trophy." })
+		return
+	end
+	local profile = getProfile(player)
+	local unlocked = {}
+	for _, character in Characters.List do
+		if character.coinsLocked then
+			profile.characters[character.id] = true
+			table.insert(unlocked, character.name)
+		end
+	end
+	profile.trophy = true
+	refreshAdminTitle(player)
+	sendProfile(player)
+	task.spawn(saveProfile, player)
+	charResultEvent:FireClient(player, {
+		message = `ADMINISTRATOR TROPHY claimed! Unlocked: {table.concat(unlocked, ", ")}.`,
+	})
 end)
 
 -- Robux purchase: a developer product, granted in ProcessReceipt below.
@@ -400,6 +462,8 @@ buyCharRobuxEvent.OnServerEvent:Connect(function(player, charId)
 	end
 	if getProfile(player).characters[charId] then
 		charResultEvent:FireClient(player, { message = `You already own {character.name}.` })
+	elseif character.adminOnly then
+		charResultEvent:FireClient(player, { error = `{character.name} can only be given by an admin.` })
 	elseif character.robuxProductId == 0 then
 		charResultEvent:FireClient(player, { error = "Robux purchase isn't set up for this character yet." })
 	else
@@ -453,7 +517,7 @@ end
 local function send(phase, match, message, turnUserId)
 	local fighters = {}
 	for _, f in match.fighters do
-		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp, maxHp = f.maxHp, dodges = f.dodges, slashes = f.slashes })
+		table.insert(fighters, { userId = f.userId, name = f.name, hp = f.hp, maxHp = f.maxHp, dodges = f.dodges, activeId = f.activeId, activeLabel = f.activeLabel, activeLeft = f.activeLeft })
 	end
 	sendToViewers(match.arena, {
 		phase = phase,
@@ -485,12 +549,14 @@ local function newFighter(player)
 		player = player,
 		name = (isAdmin(player) and "[ADMIN] " or "") .. player.DisplayName,
 		userId = player.UserId,
-		hp = Config.StartingHealth,
-		maxHp = Config.StartingHealth,
+		hp = Config.StartingHealth + (character and character.bonusHp or 0),
+		maxHp = Config.StartingHealth + (character and character.bonusHp or 0),
 		armour = Items.armourReduction(profile.equipped) + (character and character.armourBonus or 0),
 		char = character, -- the special character, which carries the ability fields
 		dodges = Config.DodgesPerMatch,
-		slashes = (character and character.slash) and Config.SlashUses or 0,
+		activeId = character and character.active and character.active.id,
+		activeLabel = character and character.active and character.active.label,
+		activeLeft = character and character.active and character.active.uses or 0,
 	}
 end
 
@@ -728,6 +794,67 @@ end
 
 -- Match ----------------------------------------------------------------------
 
+-- Sauce Sorcerer's Meteor Pie: a flaming pizza falls from the sky onto the target.
+local function meteorEffect(to)
+	local root = getRoot(to)
+	if not root then
+		return
+	end
+	local target = root.Position
+	local meteor = Instance.new("Part")
+	meteor.Name = "MeteorPie"
+	meteor.Shape = Enum.PartType.Ball
+	meteor.Size = Vector3.new(9, 9, 9)
+	meteor.Material = Enum.Material.Neon
+	meteor.Color = Color3.fromRGB(255, 140, 40)
+	meteor.Anchored = true
+	meteor.CanCollide = false
+	meteor.Position = target + Vector3.new(0, 80, 0)
+	meteor.Parent = workspace
+	local fire = Instance.new("Fire")
+	fire.Size = 25
+	fire.Heat = 10
+	fire.Parent = meteor
+
+	local fall = TweenService:Create(meteor, TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+		Position = target,
+	})
+	fall:Play()
+	fall.Completed:Wait()
+
+	-- a blast for the look only: no pressure and no broken joints
+	local blast = Instance.new("Explosion")
+	blast.Position = target
+	blast.BlastRadius = 14
+	blast.BlastPressure = 0
+	blast.DestroyJointRadiusPercent = 0
+	blast.ExplosionType = Enum.ExplosionType.NoCraters
+	blast.Parent = workspace
+	meteor:Destroy()
+end
+
+-- Time Chef's Time Freeze: the frozen fighter is tinted icy blue until their skipped turn passes.
+local function freezeEffect(f)
+	local character = getCharacter(f)
+	if not character then
+		return
+	end
+	local ice = Instance.new("Highlight")
+	ice.Name = "TimeFreezeIce"
+	ice.FillColor = Color3.fromRGB(140, 220, 255)
+	ice.FillTransparency = 0.35
+	ice.OutlineColor = Color3.new(1, 1, 1)
+	ice.Parent = character
+end
+
+local function thaw(f)
+	local character = getCharacter(f)
+	local ice = character and character:FindFirstChild("TimeFreezeIce")
+	if ice then
+		ice:Destroy()
+	end
+end
+
 -- The Head Chef's Cleaver Slash: a glowing crescent is cut through the air above the two fighters.
 local function slashEffect(from, to)
 	local fromRoot, toRoot = getRoot(from), getRoot(to)
@@ -837,25 +964,57 @@ local function runMatch(arena, a, b)
 				break
 			end
 
+			-- Time Freeze: a frozen fighter loses this turn
+			if f.frozen then
+				f.frozen = false
+				thaw(f)
+				send("hit", match, `{f.name} is frozen in time and loses a turn!`)
+				task.wait(1.6)
+				continue
+			end
+
 			if f.char and f.char.healPerTurn then
 				f.hp = math.min(f.maxHp, f.hp + f.char.healPerTurn)
 			end
 			send("turn", match, `{f.name}: throw the pizza!`, f.userId)
 			local ability = waitForThrow(f)
 
-			-- Cleaver Slash: unavoidable, ignores dodges, armour and barriers, and ends the match.
-			if ability == "CleaverSlash" and f.char and f.char.slash and (f.slashes or 0) > 0 then
-				f.slashes -= 1
-				send("rolling", match, `{f.name} raises the Cleaver...`)
-				task.wait(0.9)
-				slashEffect(f, foe)
-				foe.hp = 0
-				flash(foe)
-				send("hit", match, `{f.name} unleashes CLEAVER SLASH! {foe.name} is defeated in one blow!`)
-				task.wait(1.2)
-				knockOut(foe)
-				winner, reason = f, "with a Cleaver Slash"
-				break
+			-- Active character abilities. Each is used from a button, has `uses` charges per match,
+			-- and cannot be dodged or blocked.
+			if ability and f.activeId == ability and (f.activeLeft or 0) > 0 then
+				f.activeLeft -= 1
+				if ability == "CleaverSlash" then
+					send("rolling", match, `{f.name} raises the Cleaver...`)
+					task.wait(0.9)
+					slashEffect(f, foe)
+					foe.hp = 0
+					flash(foe)
+					send("hit", match, `{f.name} unleashes CLEAVER SLASH! {foe.name} is defeated in one blow!`)
+					task.wait(1.2)
+					knockOut(foe)
+					winner, reason = f, "with a Cleaver Slash"
+					break
+				elseif ability == "MeteorPie" then
+					send("rolling", match, `{f.name} conjures a METEOR PIE!`)
+					task.wait(0.9)
+					meteorEffect(foe)
+					foe.hp = math.max(0, foe.hp - Config.MeteorDamage)
+					flash(foe)
+					send("hit", match, `A flaming pizza meteor hits {foe.name} for {Config.MeteorDamage} damage!`)
+					task.wait(1.2)
+					if foe.hp <= 0 then
+						knockOut(foe)
+						winner, reason = f, "with a Meteor Pie"
+						break
+					end
+					continue -- the meteor is the whole turn
+				elseif ability == "TimeFreeze" then
+					send("rolling", match, `{f.name} stops time! {foe.name} will lose their next turn.`)
+					task.wait(1.4)
+					foe.frozen = true
+					freezeEffect(foe)
+					ability = nil -- the throw this turn still happens
+				end
 			end
 
 			-- Only spend an ability the player actually owns.
@@ -886,7 +1045,7 @@ local function runMatch(arena, a, b)
 			task.wait(0.6)
 			die:Destroy()
 
-			local dodged = askDodge(match, foe)
+			local dodged = not foe.frozen and askDodge(match, foe) -- a fighter frozen in time cannot dodge
 			local damage = roll
 			local notes = {}
 			if ability == "ExtraCheese" then

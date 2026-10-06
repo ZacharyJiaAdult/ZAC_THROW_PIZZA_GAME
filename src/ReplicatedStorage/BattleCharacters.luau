@@ -6,8 +6,12 @@
 --   firstHitBlocked   the first hit taken each match does no damage
 --   rerollAtOrBelow   a die roll at or below this is rerolled once
 --   lifesteal         HP healed each time a throw deals damage
---   slash             can arm Cleaver Slash once per match: an unavoidable one-hit knockout
---   coinsLocked       cannot be bought with coins (Robux or admin grant only)
+--   bonusHp           extra max HP
+--   active            { id, label, uses }: a button on your turn, usable `uses` times per match.
+--                     CleaverSlash = instant knockout, MeteorPie = 40 unavoidable damage,
+--                     TimeFreeze = opponent loses their next turn (the server runs each by id)
+--   coinsLocked       cannot be bought with coins
+--   adminOnly         cannot be bought at all: an admin grants it (or the owner claims the trophy)
 --
 -- To sell a character for Robux: create a Developer Product for it on the Creator Dashboard
 -- (Monetization > Developer Products), then paste its ID into robuxProductId. 0 = not set up yet.
@@ -103,7 +107,50 @@ Characters.List = {
 		abilityName = "Cleaver Slash",
 		desc = "Once per match, slash the air and defeat your opponent in one blow. Robux or admin only.",
 		color = Color3.fromRGB(255, 215, 80),
-		slash = true,
+		active = { id = "CleaverSlash", label = "CLEAVER SLASH", uses = 1 },
+	},
+
+	-- Admin-only characters: never for sale, only an admin (or the owner via the Administrator Trophy)
+	-- can unlock them.
+	{
+		id = "TimeChef",
+		name = "Time Chef",
+		price = 0,
+		coinsLocked = true,
+		adminOnly = true,
+		robuxPrice = 0,
+		robuxProductId = 0,
+		abilityName = "Time Freeze",
+		desc = "Once per match, stop time: your opponent loses their next turn and cannot dodge your next throw.",
+		color = Color3.fromRGB(110, 210, 255),
+		active = { id = "TimeFreeze", label = "TIME FREEZE", uses = 1 },
+	},
+	{
+		id = "SauceSorcerer",
+		name = "Sauce Sorcerer",
+		price = 0,
+		coinsLocked = true,
+		adminOnly = true,
+		robuxPrice = 0,
+		robuxProductId = 0,
+		abilityName = "Meteor Pie",
+		desc = "Once per match, call down a flaming pizza meteor for 40 damage that cannot be dodged or blocked.",
+		color = Color3.fromRGB(255, 120, 40),
+		active = { id = "MeteorPie", label = "METEOR PIE", uses = 1 },
+	},
+	{
+		id = "DoughTitan",
+		name = "Dough Titan",
+		price = 0,
+		coinsLocked = true,
+		adminOnly = true,
+		robuxPrice = 0,
+		robuxProductId = 0,
+		abilityName = "Colossal",
+		desc = "+80 max HP and take 2 less damage from every hit.",
+		color = Color3.fromRGB(170, 120, 90),
+		bonusHp = 80,
+		armourBonus = 2,
 	},
 }
 

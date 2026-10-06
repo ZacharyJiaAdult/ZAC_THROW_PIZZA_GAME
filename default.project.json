@@ -9,7 +9,8 @@
     },
     "ServerScriptService": {
       "$className": "ServerScriptService",
-      "BattleServer": { "$path": "src/ServerScriptService/BattleServer.server.luau" }
+      "BattleServer": { "$path": "src/ServerScriptService/BattleServer.server.luau" },
+      "ArenaMap": { "$path": "src/ServerScriptService/ArenaMap.luau" }
     },
     "StarterPlayer": {
       "$className": "StarterPlayer",

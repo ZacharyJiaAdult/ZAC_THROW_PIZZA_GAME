@@ -4,6 +4,7 @@ local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage:WaitForChild("BattleConfig"))
 local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
+local ArenaMap = require(script.Parent:WaitForChild("ArenaMap"))
 
 local remotes = Instance.new("Folder")
 remotes.Name = "BattleRemotes"
@@ -28,10 +29,16 @@ equipEvent.Parent = remotes
 local crateEvent = Instance.new("RemoteEvent")
 crateEvent.Name = "CrateResult"
 crateEvent.Parent = remotes
+local travelEvent = Instance.new("RemoteEvent")
+travelEvent.Name = "Travel"
+travelEvent.Parent = remotes
 remotes.Parent = ReplicatedStorage
 
 -- Players only join the match queue after pressing START on the title screen.
 local ready = {}
+local waitingSince = {} -- player -> when they stepped into the Waiting Area
+local wantsBot = {} -- player -> true once they used the bot kiosk
+local inMatch = {} -- player -> true while fighting
 
 -- Shop profiles live in memory only (no saving yet).
 local profiles = {}
@@ -57,6 +64,9 @@ startEvent.OnServerEvent:Connect(function(player)
 end)
 Players.PlayerRemoving:Connect(function(player)
 	ready[player] = nil
+	waitingSince[player] = nil
+	wantsBot[player] = nil
+	inMatch[player] = nil
 	profiles[player] = nil
 end)
 
@@ -122,17 +132,10 @@ equipEvent.OnServerEvent:Connect(function(player, itemId)
 	end
 end)
 
-local ARENA_CENTER = Vector3.new(0, 300, 0)
 local PAD_OFFSET = 18
 
-local floor = Instance.new("Part")
-floor.Name = "ArenaFloor"
-floor.Anchored = true
-floor.Size = Vector3.new(60, 2, 30)
-floor.Position = ARENA_CENTER
-floor.Material = Enum.Material.Slate
-floor.Color = Color3.fromRGB(190, 70, 55)
-floor.Parent = workspace
+local map = ArenaMap.build()
+local ARENA_CENTER = map.arenaCenter
 
 -- Broadcasting ---------------------------------------------------------------
 
@@ -458,34 +461,128 @@ local function runMatch(a, b)
 	end
 end
 
+-- Waiting Area, bot kiosk and spectating -------------------------------------
+
+local zone = map.zone
+
+local function isInZone(position)
+	local rel = zone.CFrame:PointToObjectSpace(position)
+	return math.abs(rel.X) <= zone.Size.X / 2 and math.abs(rel.Z) <= zone.Size.Z / 2 and rel.Y > -2 and rel.Y < 12
+end
+
+-- Standing in the Waiting Area is what puts a player in the queue.
+task.spawn(function()
+	while true do
+		for _, p in Players:GetPlayers() do
+			local root = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+			if root and not inMatch[p] and isInZone(root.Position) then
+				waitingSince[p] = waitingSince[p] or os.clock()
+			else
+				waitingSince[p] = nil
+				wantsBot[p] = nil
+			end
+		end
+		task.wait(0.25)
+	end
+end)
+
+map.botPrompt.Enabled = Config.BotEnabled
+map.botPrompt.Triggered:Connect(function(player)
+	if Config.BotEnabled and waitingSince[player] then
+		wantsBot[player] = true
+	end
+end)
+
+travelEvent.OnServerEvent:Connect(function(player, where)
+	local character = player.Character
+	if inMatch[player] or not character or not character:FindFirstChild("HumanoidRootPart") then
+		return
+	end
+	if where == "stands" then
+		character:PivotTo(map.standsSpot())
+	elseif where == "lobby" then
+		character:PivotTo(map.lobbySpot())
+	end
+end)
+
 -- Lobby loop -----------------------------------------------------------------
 
-while true do
-	local queue = {}
+local function getQueue()
+	local list = {}
 	for _, p in Players:GetPlayers() do
-		if ready[p] then
-			table.insert(queue, p)
+		if ready[p] and waitingSince[p] and not inMatch[p] then
+			table.insert(list, p)
 		end
 	end
-	local needed = Config.BotEnabled and 1 or Config.MinPlayers
-	if #queue < needed then
-		broadcast({ phase = "lobby", message = `Waiting for players ({#queue}/{needed})...` })
+	table.sort(list, function(a, b)
+		return waitingSince[a] < waitingSince[b]
+	end)
+	return list
+end
+
+local function stillWaiting(p)
+	return p.Parent == Players and waitingSince[p] ~= nil and not inMatch[p]
+end
+
+while true do
+	local queue = getQueue()
+	local playerA, playerB, vsBot
+	for _, p in queue do
+		if wantsBot[p] then
+			playerA, vsBot = p, true
+			break
+		end
+	end
+	if not playerA and #queue >= 2 then
+		playerA, playerB = queue[1], queue[2]
+	end
+
+	if not playerA then
+		local message = "Step into the Waiting Area to play!"
+		if #queue > 0 then
+			message = Config.BotEnabled and "Waiting for an opponent... or fight the bot!" or "Waiting for an opponent..."
+		end
+		broadcast({ phase = "lobby", message = message })
+		task.wait(0.5)
+		continue
+	end
+
+	local versus = vsBot and `{playerA.DisplayName} vs PizzaBot` or `{playerA.DisplayName} vs {playerB.DisplayName}`
+	local cancelled = false
+	for s = Config.IntermissionSeconds, 1, -1 do
+		if not stillWaiting(playerA) or (playerB and not stillWaiting(playerB)) or (vsBot and not wantsBot[playerA]) then
+			cancelled = true
+			break
+		end
+		broadcast({ phase = "lobby", message = `{versus} starts in {s}...` })
 		task.wait(1)
-	else
-		for i = #queue, 2, -1 do
-			local j = math.random(1, i)
-			queue[i], queue[j] = queue[j], queue[i]
+	end
+
+	if not cancelled and stillWaiting(playerA) and (not playerB or stillWaiting(playerB)) then
+		local fighterA = newFighter(playerA)
+		local fighterB = vsBot and makeBot() or newFighter(playerB)
+		inMatch[playerA] = true
+		if playerB then
+			inMatch[playerB] = true
 		end
-		for s = Config.IntermissionSeconds, 1, -1 do
-			broadcast({ phase = "lobby", message = `Match starts in {s}...` })
-			task.wait(1)
+
+		local ok, err = pcall(runMatch, fighterA, fighterB)
+		if not ok then
+			warn("Match error: " .. tostring(err))
+			for _, f in { fighterA, fighterB } do
+				if not f.isBot and f.player.Parent == Players then
+					f.player:LoadCharacter()
+				end
+			end
 		end
-		local p1, p2 = queue[1], queue[2]
-		if p1.Parent == Players and (not p2 or p2.Parent == Players) then
-			-- With one player in the server, the practice bot fills the second slot.
-			local fighterA = newFighter(p1)
-			local fighterB = p2 and newFighter(p2) or makeBot()
-			runMatch(fighterA, fighterB)
+		if fighterB.isBot and fighterB.model.Parent then
+			fighterB.model:Destroy()
 		end
+
+		inMatch[playerA] = nil
+		if playerB then
+			inMatch[playerB] = nil
+		end
+		wantsBot[playerA] = nil
 	end
 end

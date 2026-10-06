@@ -1,6 +1,5 @@
 return {
-	MinPlayers = 2,
-	BotEnabled = true, -- a lone player gets a practice bot as the opponent (set false for real PvP only)
+	BotEnabled = true, -- adds the "Fight Bot" kiosk to the Waiting Area (false = real PvP only)
 	StartingHealth = 100,
 	MaxRounds = 5, -- one round = both fighters take a turn; a tie after the last round goes to sudden death
 	DieSides = 20, -- damage dealt equals the roll

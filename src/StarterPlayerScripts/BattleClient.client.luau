@@ -11,6 +11,7 @@ local profileEvent = remotes:WaitForChild("Profile")
 local buyEvent = remotes:WaitForChild("BuyCrate")
 local equipEvent = remotes:WaitForChild("Equip")
 local crateEvent = remotes:WaitForChild("CrateResult")
+local travelEvent = remotes:WaitForChild("Travel")
 local Items = require(ReplicatedStorage:WaitForChild("BattleItems"))
 
 local function make(class, props, parent)
@@ -183,6 +184,7 @@ local abilityRow = make("Frame", {
 make("UIListLayout", {
 	FillDirection = Enum.FillDirection.Horizontal,
 	HorizontalAlignment = Enum.HorizontalAlignment.Center,
+	SortOrder = Enum.SortOrder.LayoutOrder,
 	Padding = UDim.new(0, 8),
 }, abilityRow)
 
@@ -306,7 +308,7 @@ local inventory = make("Frame", {
 	Size = UDim2.new(1, -40, 1, -265),
 	BackgroundTransparency = 1,
 }, shop)
-make("UIListLayout", { Padding = UDim.new(0, 6) }, inventory)
+make("UIListLayout", { SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6) }, inventory)
 
 local function refreshShop()
 	coinsLabel.Text = `Coins: {profile.coins}`
@@ -320,6 +322,7 @@ local function refreshShop()
 	make("UIListLayout", {
 		FillDirection = Enum.FillDirection.Horizontal,
 		VerticalAlignment = Enum.VerticalAlignment.Center,
+		SortOrder = Enum.SortOrder.LayoutOrder,
 		Padding = UDim.new(0, 6),
 	}, armourRow)
 	make("TextLabel", {
@@ -337,6 +340,7 @@ local function refreshShop()
 	table.sort(armourIds)
 	if #armourIds == 0 then
 		make("TextLabel", {
+			LayoutOrder = 1,
 			Size = UDim2.fromOffset(200, 40),
 			BackgroundTransparency = 1,
 			Font = Enum.Font.Gotham,
@@ -349,6 +353,7 @@ local function refreshShop()
 		local item = Items.List[id]
 		local equipped = profile.equipped == id
 		local button = make("TextButton", {
+			LayoutOrder = 1,
 			Size = UDim2.fromOffset(140, 40),
 			BackgroundColor3 = equipped and Color3.fromRGB(70, 130, 70) or Color3.fromRGB(55, 48, 62),
 			Font = Enum.Font.GothamBold,
@@ -426,6 +431,33 @@ crateEvent.OnClientEvent:Connect(function(result)
 	end
 	resultLabel.Text = text
 	resultLabel.TextColor3 = Items.RarityColors[item.rarity]
+end)
+
+-- Spectating: jump to the stands to watch matches, and back to the lobby ---------------
+
+local watching = false
+local watchButton = make("TextButton", {
+	AnchorPoint = Vector2.new(1, 1),
+	Position = UDim2.new(1, -20, 1, -20),
+	Size = UDim2.fromOffset(210, 50),
+	BackgroundColor3 = Color3.fromRGB(110, 90, 200),
+	Font = Enum.Font.GothamBlack,
+	TextSize = 20,
+	TextColor3 = Color3.new(1, 1, 1),
+	Text = "WATCH MATCHES",
+}, gui)
+make("UICorner", { CornerRadius = UDim.new(0, 12) }, watchButton)
+
+watchButton.Activated:Connect(function()
+	travelEvent:FireServer(watching and "lobby" or "stands")
+	watching = not watching
+	watchButton.Text = watching and "BACK TO LOBBY" or "WATCH MATCHES"
+end)
+
+-- Respawning (for example after a match) puts you back at the lobby
+player.CharacterAdded:Connect(function()
+	watching = false
+	watchButton.Text = "WATCH MATCHES"
 end)
 
 local turnToken = 0

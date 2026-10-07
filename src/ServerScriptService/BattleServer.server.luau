@@ -99,10 +99,10 @@ end
 
 -- Admins can grant the Head Chef to anyone. Kept on the server so the list is never sent to clients.
 -- The place owner (when the place belongs to a user) is always an admin.
-local ADMIN_USER_IDS = { 11769949215 } -- @bottleo_waer
+local ADMIN_USER_IDS = { 11769949215, 7029100460 } -- @bottleo_waer, @Boss_zacharys
 
 -- The owner (the account that owns the place) alone can claim the Administrator Trophy.
-local OWNER_USER_IDS = { 11769949215 } -- @bottleo_waer
+local OWNER_USER_IDS = { 11769949215, 7029100460 } -- @bottleo_waer, @Boss_zacharys
 
 local function isOwner(player)
 	if table.find(OWNER_USER_IDS, player.UserId) then

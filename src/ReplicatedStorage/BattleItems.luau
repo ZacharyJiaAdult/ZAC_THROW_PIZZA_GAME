@@ -61,6 +61,17 @@ Items.Crates = {
 		color = Color3.fromRGB(255, 205, 60),
 		weights = { Common = 10, Rare = 50, Epic = 40 },
 	},
+	-- `special`: `chance` (0-1) to win one of these characters instead of a normal item. Owning it already
+	-- pays `refund` coins back. Characters it can drop are marked crateOnly in BattleCharacters.
+	{
+		id = "Purple",
+		name = "Purple Chest",
+		price = 100000,
+		blurb = "30% chance of a special class: Void Chef or Zombie Slayer",
+		color = Color3.fromRGB(170, 80, 255),
+		weights = { Common = 0, Rare = 30, Epic = 70 },
+		special = { chance = 0.3, characters = { "VoidChef", "ZombieSlayer" }, refund = 50000 },
+	},
 }
 
 function Items.getCrate(id)

@@ -287,7 +287,7 @@ end
 local shop = make("Frame", {
 	AnchorPoint = Vector2.new(0.5, 0.5),
 	Position = UDim2.fromScale(0.5, 0.5),
-	Size = UDim2.fromOffset(700, 440),
+	Size = UDim2.fromOffset(920, 440),
 	BackgroundColor3 = Color3.fromRGB(35, 30, 40),
 	Visible = false,
 }, gui)
@@ -347,7 +347,7 @@ for i, crate in Items.Crates do
 		Font = Enum.Font.GothamBlack,
 		TextSize = 18,
 		TextColor3 = Color3.new(1, 1, 1),
-		Text = `Buy - {crate.price} coins`,
+		Text = `Buy - {(tostring(crate.price):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", ""))} coins`,
 	}, card)
 	make("UICorner", { CornerRadius = UDim.new(0, 8) }, buy)
 	buy.Activated:Connect(function()
@@ -598,6 +598,8 @@ local function refreshCharacters()
 		else
 			if character.adminOnly then
 				rowButton(23, "Admin only", Color3.fromRGB(150, 120, 30), nil)
+			elseif character.crateOnly then
+				rowButton(23, "Purple Chest only", Color3.fromRGB(120, 60, 190), nil)
 			elseif character.coinsLocked then
 				rowButton(8, "Robux or admin only", Color3.fromRGB(150, 60, 60), nil)
 			else
@@ -605,8 +607,8 @@ local function refreshCharacters()
 					buyCharEvent:FireServer(character.id)
 				end)
 			end
-			if character.adminOnly then
-				-- admin grant only: no Robux button
+			if character.adminOnly or character.crateOnly then
+				-- admin grant or crate drop only: no Robux button
 			elseif character.robuxProductId ~= 0 then
 				rowButton(40, `R$ {character.robuxPrice}`, Color3.fromRGB(60, 160, 90), function()
 					buyCharRobuxEvent:FireServer(character.id)
@@ -860,6 +862,14 @@ crateEvent.OnClientEvent:Connect(function(result)
 	if result.error then
 		resultLabel.Text = result.error
 		resultLabel.TextColor3 = Color3.fromRGB(255, 90, 90)
+		return
+	end
+	if result.characterId then
+		local character = Characters.ById[result.characterId]
+		resultLabel.Text = if result.refund
+			then `You pulled {character.name} again! {result.refund} coins back.`
+			else `SPECIAL CLASS! You unlocked {character.name}: {character.abilityName}!`
+		resultLabel.TextColor3 = Color3.fromRGB(190, 110, 255)
 		return
 	end
 	local item = Items.List[result.itemId]

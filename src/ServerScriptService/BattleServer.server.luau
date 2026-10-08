@@ -210,6 +210,7 @@ local function saveProfile(player)
 			character = profile.character,
 			receipts = profile.receipts,
 			trophy = profile.trophy,
+			starterClaimed = profile.starterClaimed,
 		})
 	end)
 	if not ok then
@@ -243,6 +244,7 @@ local function loadProfile(player)
 			end
 			profile.receipts = data.receipts or profile.receipts
 			profile.trophy = data.trophy
+			profile.starterClaimed = data.starterClaimed
 			if profile.trophy then
 				task.spawn(refreshAdminTitle, player)
 			end
@@ -343,6 +345,24 @@ buyEvent.OnServerEvent:Connect(function(player, crateId)
 		return
 	end
 	profile.coins -= crate.price
+
+	-- Special crates sometimes drop a whole character instead of an item.
+	local special = crate.special
+	if special and math.random() < special.chance then
+		local character = Characters.ById[special.characters[math.random(#special.characters)]]
+		local refund
+		if profile.characters[character.id] then
+			refund = special.refund
+			profile.coins += refund
+		else
+			profile.characters[character.id] = true
+			profile.character = character.id
+		end
+		crateEvent:FireClient(player, { characterId = character.id, refund = refund })
+		sendProfile(player)
+		task.spawn(saveProfile, player)
+		return
+	end
 
 	local itemId = rollCrate(crate)
 	local item = Items.List[itemId]
@@ -469,6 +489,41 @@ map.trophyPrompt.Triggered:Connect(function(player)
 	})
 end)
 
+-- Starter Pack present: gives the default unit and starter gear from Config.StarterPack, once per player.
+map.presentPrompt.Triggered:Connect(function(player)
+	local profile = getProfile(player)
+	if profile.starterClaimed then
+		charResultEvent:FireClient(player, { message = "You already opened your Starter Pack." })
+		return
+	end
+	local pack = Config.StarterPack
+	local lines = {}
+	local starter = Characters.ById[pack.character]
+	if starter then
+		profile.characters[starter.id] = true
+		table.insert(lines, starter.name)
+	end
+	for _, itemId in pack.armour do
+		local item = Items.List[itemId]
+		if item then
+			profile.armour[itemId] = true
+			profile.equipped = profile.equipped or itemId
+			table.insert(lines, item.name)
+		end
+	end
+	for itemId, count in pack.abilities do
+		local item = Items.List[itemId]
+		if item then
+			profile.abilities[itemId] = (profile.abilities[itemId] or 0) + count
+			table.insert(lines, `{count}x {item.name}`)
+		end
+	end
+	profile.starterClaimed = true
+	sendProfile(player)
+	task.spawn(saveProfile, player)
+	charResultEvent:FireClient(player, { message = `Starter Pack opened! You got: {table.concat(lines, ", ")}.` })
+end)
+
 -- Robux purchase: a developer product, granted in ProcessReceipt below.
 buyCharRobuxEvent.OnServerEvent:Connect(function(player, charId)
 	local character = typeof(charId) == "string" and Characters.ById[charId]
@@ -479,6 +534,8 @@ buyCharRobuxEvent.OnServerEvent:Connect(function(player, charId)
 		charResultEvent:FireClient(player, { message = `You already own {character.name}.` })
 	elseif character.adminOnly then
 		charResultEvent:FireClient(player, { error = `{character.name} can only be given by an admin.` })
+	elseif character.crateOnly then
+		charResultEvent:FireClient(player, { error = `{character.name} only drops from the Purple Chest.` })
 	elseif character.robuxProductId == 0 then
 		charResultEvent:FireClient(player, { error = "Robux purchase isn't set up for this character yet." })
 	else
@@ -912,6 +969,68 @@ local function meteorEffect(to)
 	meteor:Destroy()
 end
 
+-- Void Chef's Black Hole: a black sphere with a purple ring opens above the target and swallows them.
+local function blackHoleEffect(to)
+	local root = getRoot(to)
+	if not root then
+		return
+	end
+	local center = root.Position + Vector3.new(0, 3, 0)
+	local hole = Instance.new("Part")
+	hole.Name = "BlackHole"
+	hole.Shape = Enum.PartType.Ball
+	hole.Size = Vector3.one
+	hole.Color = Color3.new(0, 0, 0)
+	hole.Material = Enum.Material.SmoothPlastic
+	hole.Anchored = true
+	hole.CanCollide = false
+	hole.Position = center
+	hole.Parent = workspace
+	local ring = Instance.new("Part")
+	ring.Name = "BlackHoleRing"
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Size = Vector3.new(0.5, 1, 1)
+	ring.Color = Color3.fromRGB(170, 80, 255)
+	ring.Material = Enum.Material.Neon
+	ring.Anchored = true
+	ring.CanCollide = false
+	ring.CFrame = CFrame.new(center) * CFrame.Angles(0, 0, math.pi / 2)
+	ring.Parent = workspace
+	local light = Instance.new("PointLight")
+	light.Color = Color3.fromRGB(170, 80, 255)
+	light.Range = 30
+	light.Brightness = 4
+	light.Parent = hole
+
+	local grow = TweenInfo.new(1.2, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+	TweenService:Create(hole, grow, { Size = Vector3.one * 14 }):Play()
+	TweenService:Create(ring, grow, { Size = Vector3.new(0.5, 24, 24) }):Play()
+	task.wait(1.2)
+
+	-- the victim is crushed down and pulled into the middle
+	local character = getCharacter(to)
+	if character then
+		for _, d in character:GetDescendants() do
+			if d:IsA("BasePart") then
+				d.Anchored = true
+				d.CanCollide = false
+				TweenService:Create(d, TweenInfo.new(0.8, Enum.EasingStyle.Quad, Enum.EasingDirection.In), {
+					Size = d.Size * 0.05,
+					Position = center,
+				}):Play()
+			end
+		end
+	end
+	task.wait(0.9)
+	local fade = TweenInfo.new(0.6)
+	TweenService:Create(hole, fade, { Size = Vector3.one * 0.5, Transparency = 1 }):Play()
+	TweenService:Create(ring, fade, { Size = Vector3.new(0.5, 1, 1), Transparency = 1 }):Play()
+	task.delay(0.7, function()
+		hole:Destroy()
+		ring:Destroy()
+	end)
+end
+
 -- Time Chef's Time Freeze: the frozen fighter is tinted icy blue until their skipped turn passes.
 local function freezeEffect(f)
 	local character = getCharacter(f)
@@ -984,6 +1103,30 @@ local function slashEffect(from, to)
 			segment:Destroy()
 		end
 	end)
+end
+
+-- Zombie Slayer's Cleave: the usual slash, then the victim splits at the waist and the halves fall apart.
+local function cleaveEffect(from, to)
+	slashEffect(from, to)
+	local root = getRoot(to)
+	local character = getCharacter(to)
+	if not root or not character then
+		return
+	end
+	local waist = root.Position.Y
+	local side = root.CFrame.RightVector
+	local info = TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+	for _, d in character:GetDescendants() do
+		if d:IsA("BasePart") then
+			local upper = d.Position.Y >= waist
+			d.Anchored = true
+			d.CanCollide = false
+			local shift = side * (upper and 2.5 or -2.5) + Vector3.new(0, upper and 1 or -1, 0)
+			local tilt = CFrame.Angles(0, 0, math.rad(upper and -35 or 35))
+			TweenService:Create(d, info, { CFrame = (d.CFrame * tilt) + shift }):Play()
+		end
+	end
+	task.wait(0.8)
 end
 
 -- Gives the defender a short window to dodge the throw that is about to land. A dodge uses one of
@@ -1072,6 +1215,26 @@ local function runMatch(arena, a, b)
 					task.wait(1.2)
 					knockOut(foe)
 					winner, reason = f, "with a Cleaver Slash"
+					break
+				elseif ability == "BlackHole" then
+					send("rolling", match, `{f.name} opens a BLACK HOLE...`)
+					task.wait(0.9)
+					blackHoleEffect(foe)
+					foe.hp = 0
+					send("hit", match, `{foe.name} is swallowed by the black hole!`)
+					task.wait(1)
+					knockOut(foe)
+					winner, reason = f, "with a Black Hole"
+					break
+				elseif ability == "Cleave" then
+					send("rolling", match, `{f.name} raises their blade...`)
+					task.wait(0.9)
+					cleaveEffect(f, foe)
+					foe.hp = 0
+					send("hit", match, `{f.name} CLEAVES {foe.name} clean in half!`)
+					task.wait(1)
+					knockOut(foe)
+					winner, reason = f, "with a Cleave"
 					break
 				elseif ability == "MeteorPie" then
 					send("rolling", match, `{f.name} conjures a METEOR PIE!`)
@@ -1491,6 +1654,44 @@ local function ffaAbility(match, f)
 		ffaSend(match, "ffa", `{f.name} swings the Cleaver!`)
 		task.spawn(function()
 			slashEffect(f, target)
+			if target.alive and match.running then
+				ffaEliminate(match, target, f)
+			end
+		end)
+	elseif id == "BlackHole" then
+		-- swallows every enemy near the caster
+		local victims = {}
+		for _, v in match.fighters do
+			local vr = getRoot(v)
+			local fr = getRoot(f)
+			if v ~= f and v.alive and vr and fr and (vr.Position - fr.Position).Magnitude <= 45 then
+				table.insert(victims, v)
+			end
+		end
+		if #victims == 0 then
+			notify(f, "No enemy within reach of the Black Hole!")
+			return
+		end
+		f.activeLeft -= 1
+		ffaSend(match, "ffa", `{f.name} opens a BLACK HOLE!`)
+		for _, v in victims do
+			task.spawn(function()
+				blackHoleEffect(v)
+				if v.alive and match.running then
+					ffaEliminate(match, v, f)
+				end
+			end)
+		end
+	elseif id == "Cleave" then
+		local target = nearestEnemy(match, f, 35)
+		if not target then
+			notify(f, "No enemy within reach of the blade!")
+			return
+		end
+		f.activeLeft -= 1
+		ffaSend(match, "ffa", `{f.name} swings their blade!`)
+		task.spawn(function()
+			cleaveEffect(f, target)
 			if target.alive and match.running then
 				ffaEliminate(match, target, f)
 			end

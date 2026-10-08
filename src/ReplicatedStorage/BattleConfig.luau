@@ -34,6 +34,13 @@ return {
 	MeteorDamage = 40, -- Sauce Sorcerer: Meteor Pie damage (cannot be dodged or blocked)
 	IntermissionSeconds = 5,
 	StartingCoins = 100, -- what a new player begins with (progress is saved to a DataStore on a published place)
+	-- The Starter Pack present by the spawn: every player can open it once (saved with their profile).
+	-- character = default unit, armour = pieces to own, abilities = how many of each single-use item.
+	StarterPack = {
+		character = "ClassicChef",
+		armour = { "CardboardVest" },
+		abilities = { ExtraCheese = 2, LuckyPepperoni = 1 },
+	},
 	WinCoins = 50,
 	LossCoins = 20,
 	ResultSeconds = 6, 

@@ -12,6 +12,9 @@
 --                     TimeFreeze = opponent loses their next turn (the server runs each by id)
 --   coinsLocked       cannot be bought with coins
 --   adminOnly         cannot be bought at all: an admin grants it (or the owner claims the trophy)
+--   crateOnly         only drops from the Purple Chest (an admin can also grant it)
+--                     BlackHole = swallows the opponent (everything near you in a Free For All),
+--                     Cleave = one strike cuts the opponent in half
 --
 -- To sell a character for Robux: create a Developer Product for it on the Creator Dashboard
 -- (Monetization > Developer Products), then paste its ID into robuxProductId. 0 = not set up yet.
@@ -151,6 +154,34 @@ Characters.List = {
 		color = Color3.fromRGB(170, 120, 90),
 		bonusHp = 80,
 		armourBonus = 2,
+	},
+
+	-- Crate-only characters: dropped by the Purple Chest, never for sale.
+	{
+		id = "VoidChef",
+		name = "Void Chef",
+		price = 0,
+		coinsLocked = true,
+		crateOnly = true,
+		robuxPrice = 0,
+		robuxProductId = 0,
+		abilityName = "Black Hole",
+		desc = "Once per match, summon a black hole that swallows your opponent whole (everything close by in a Free For All).",
+		color = Color3.fromRGB(120, 40, 200),
+		active = { id = "BlackHole", label = "BLACK HOLE", uses = 1 },
+	},
+	{
+		id = "ZombieSlayer",
+		name = "Zombie Slayer",
+		price = 0,
+		coinsLocked = true,
+		crateOnly = true,
+		robuxPrice = 0,
+		robuxProductId = 0,
+		abilityName = "Cleave",
+		desc = "Once per match, one strike cuts your opponent clean in half.",
+		color = Color3.fromRGB(90, 150, 70),
+		active = { id = "Cleave", label = "CLEAVE", uses = 1 },
 	},
 }
 

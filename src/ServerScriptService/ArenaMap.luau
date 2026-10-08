@@ -561,6 +561,62 @@ function ArenaMap.build(count)
 	trophyPrompt.RequiresLineOfSight = false
 	trophyPrompt.Parent = pedestal
 
+	-- Starter Pack: a wrapped present by the spawn. Everyone can open it once (the server checks).
+	local present = part(map, {
+		Name = "StarterPresent",
+		Size = Vector3.new(4, 3.5, 4),
+		Position = Vector3.new(9, 2.75, 7),
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(215, 50, 60),
+	})
+	part(map, {
+		Name = "PresentRibbonA",
+		Size = Vector3.new(4.2, 3.7, 0.8),
+		Position = present.Position,
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(255, 215, 80),
+		CanCollide = false,
+	})
+	part(map, {
+		Name = "PresentRibbonB",
+		Size = Vector3.new(0.8, 3.7, 4.2),
+		Position = present.Position,
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(255, 215, 80),
+		CanCollide = false,
+	})
+	part(map, {
+		Name = "PresentBow",
+		Shape = Enum.PartType.Ball,
+		Size = Vector3.new(2, 1.4, 2),
+		Position = present.Position + Vector3.new(0, 2.3, 0),
+		Material = Enum.Material.SmoothPlastic,
+		Color = Color3.fromRGB(255, 215, 80),
+		CanCollide = false,
+	})
+	local presentGui = Instance.new("BillboardGui")
+	presentGui.Size = UDim2.fromOffset(220, 50)
+	presentGui.StudsOffset = Vector3.new(0, 4.5, 0)
+	presentGui.AlwaysOnTop = true
+	presentGui.Parent = present
+	local presentLabel = Instance.new("TextLabel")
+	presentLabel.Size = UDim2.fromScale(1, 1)
+	presentLabel.BackgroundTransparency = 1
+	presentLabel.Font = Enum.Font.GothamBlack
+	presentLabel.TextScaled = true
+	presentLabel.TextColor3 = Color3.fromRGB(255, 220, 60)
+	presentLabel.TextStrokeTransparency = 0
+	presentLabel.Text = "STARTER PACK"
+	presentLabel.Parent = presentGui
+
+	local presentPrompt = Instance.new("ProximityPrompt")
+	presentPrompt.ActionText = "Open"
+	presentPrompt.ObjectText = "Starter Pack"
+	presentPrompt.HoldDuration = 0.8
+	presentPrompt.MaxActivationDistance = 10
+	presentPrompt.RequiresLineOfSight = false
+	presentPrompt.Parent = present
+
 	-- Free For All -----------------------------------------------------------
 	local ffaCenter = Vector3.new(FFA_ARENA_X, 1, ARENA_Z)
 	buildFFAArena(map, ffaCenter)
@@ -634,6 +690,7 @@ function ArenaMap.build(count)
 		zone = zone,
 		botPrompt = prompt,
 		trophyPrompt = trophyPrompt,
+		presentPrompt = presentPrompt,
 		ffa = ffa,
 		ffaZone = ffaZone,
 		ffaBotPrompt = ffaPrompt,
